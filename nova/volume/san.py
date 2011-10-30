@@ -583,3 +583,191 @@ class HpSanISCSIDriver(SanISCSIDriver):
         cliq_args['volumeName'] = volume['name']
 
         self._cliq_run_xml("unassignVolume", cliq_args)
+
+class NexentaISCSIDriver(SanISCSIDriver):
+    """Executes commands relating to Nexenta-hosted ISCSI volumes.
+    
+    This class is a derivative work of SolarisISCSIDriver developed by 
+    Justin Santa Barbara.
+
+    I create a user called 'stackops' and then I grant permissions to
+    create ZFS volumes and iSCSI targets.
+    
+    Also make sure you can login using san_login & san_password/san_privatekey
+    """
+
+    def _view_exists(self, luid):
+        cmd = "pfexec /usr/sbin/stmfadm list-view -l %s" % (luid)
+        (out, _err) = self._run_ssh(cmd,
+                                    check_exit_code=False)
+        if "no views found" in out:
+            return False
+
+        if "View Entry:" in out:
+            return True
+
+        raise exception.Error("Cannot parse list-view output: %s" % (out))
+
+    def _get_target_groups(self):
+        """Gets list of target groups from host."""
+        (out, _err) = self._run_ssh("pfexec /usr/sbin/stmfadm list-tg")
+        matches = _get_prefixed_values(out, 'Target group: ')
+        LOG.debug("target_groups=%s" % matches)
+        return matches
+
+    def _target_group_exists(self, target_group_name):
+        return target_group_name not in self._get_target_groups()
+
+    def _get_target_group_members(self, target_group_name):
+        (out, _err) = self._run_ssh("pfexec /usr/sbin/stmfadm list-tg -v %s" %
+                                    (target_group_name))
+        matches = _get_prefixed_values(out, 'Member: ')
+        LOG.debug("members of %s=%s" % (target_group_name, matches))
+        return matches
+
+    def _is_target_group_member(self, target_group_name, iscsi_target_name):
+        return iscsi_target_name in (
+            self._get_target_group_members(target_group_name))
+
+    def _get_iscsi_targets(self):
+        cmd = ("pfexec /usr/sbin/itadm list-target | "
+               "awk '{print $1}' | grep -v ^TARGET")
+        (out, _err) = self._run_ssh(cmd)
+        matches = _collect_lines(out)
+        LOG.debug("_get_iscsi_targets=%s" % (matches))
+        return matches
+
+    def _iscsi_target_exists(self, iscsi_target_name):
+        return iscsi_target_name in self._get_iscsi_targets()
+
+    def _build_zfs_poolname(self, volume):
+        zfs_poolname = '%s/%s' % (FLAGS.volume_group, volume['name'])
+        return zfs_poolname
+
+    def create_volume(self, volume):
+        """Creates a volume."""
+        if int(volume['size']) == 0:
+            sizestr = '100M'
+        else:
+            sizestr = '%sG' % volume['size']
+
+        zfs_poolname = self._build_zfs_poolname(volume)
+
+        thin_provision_arg = '-s' if FLAGS.san_thin_provision else ''
+        # Create a zfs volume
+        self._run_ssh("pfexec /usr/sbin/zfs create %s -V %s %s" %
+                      (thin_provision_arg,
+                       sizestr,
+                       zfs_poolname))
+
+    def _get_luid(self, volume):
+        zfs_poolname = self._build_zfs_poolname(volume)
+
+        cmd = ("pfexec /usr/sbin/sbdadm list-lu | "
+               "grep -w %s | awk '{print $1}'" %
+               (zfs_poolname))
+
+        (stdout, _stderr) = self._run_ssh(cmd)
+
+        luid = stdout.strip()
+        return luid
+
+    def _is_lu_created(self, volume):
+        luid = self._get_luid(volume)
+        return luid
+
+    def delete_volume(self, volume):
+        """Deletes a volume."""
+        zfs_poolname = self._build_zfs_poolname(volume)
+        self._run_ssh("pfexec /usr/sbin/zfs destroy %s" %
+                      (zfs_poolname))
+
+    def local_path(self, volume):
+        # TODO(justinsb): Is this needed here?
+        escaped_group = FLAGS.volume_group.replace('-', '--')
+        escaped_name = volume['name'].replace('-', '--')
+        return "/dev/mapper/%s-%s" % (escaped_group, escaped_name)
+
+    def ensure_export(self, context, volume):
+        """Synchronously recreates an export for a logical volume."""
+        #TODO(justinsb): On bootup, this is called for every volume.
+        # It then runs ~5 SSH commands for each volume,
+        # most of which fetch the same info each time
+        # This makes initial start stupid-slow
+        self._do_export(volume, force_create=False)
+
+    def create_export(self, context, volume):
+        self._do_export(volume, force_create=True)
+
+    def _do_export(self, volume, force_create):
+        # Create a Logical Unit (LU) backed by the zfs volume
+        zfs_poolname = self._build_zfs_poolname(volume)
+
+        if force_create or not self._is_lu_created(volume):
+            cmd = ("pfexec /usr/sbin/sbdadm create-lu /dev/zvol/rdsk/%s" %
+                   (zfs_poolname))
+            self._run_ssh(cmd)
+
+        luid = self._get_luid(volume)
+        iscsi_name = self._build_iscsi_target_name(volume)
+        target_group_name = 'tg-%s' % volume['name']
+
+        # Create a iSCSI target, mapped to just this volume
+        if force_create or not self._target_group_exists(target_group_name):
+            self._run_ssh("pfexec /usr/sbin/stmfadm create-tg %s" %
+                          (target_group_name))
+
+        # Yes, we add the initiatior before we create it!
+        # Otherwise, it complains that the target is already active
+        if force_create or not self._is_target_group_member(target_group_name,
+                                                            iscsi_name):
+            self._run_ssh("pfexec /usr/sbin/stmfadm add-tg-member -g %s %s" %
+                          (target_group_name, iscsi_name))
+        if force_create or not self._iscsi_target_exists(iscsi_name):
+            self._run_ssh("pfexec /usr/sbin/itadm create-target -n %s" %
+                          (iscsi_name))
+        if force_create or not self._view_exists(luid):
+            self._run_ssh("pfexec /usr/sbin/stmfadm add-view -t %s %s" %
+                          (target_group_name, luid))
+
+        #TODO(justinsb): Is this always 1? Does it matter?
+        iscsi_portal_interface = '1'
+        iscsi_portal = FLAGS.san_ip + ":3260," + iscsi_portal_interface
+
+        db_update = {}
+        db_update['provider_location'] = ("%s %s" %
+                                          (iscsi_portal,
+                                           iscsi_name))
+
+        return db_update
+
+    def remove_export(self, context, volume):
+        """Removes an export for a logical volume."""
+
+        # This is the reverse of _do_export
+        luid = self._get_luid(volume)
+        iscsi_name = self._build_iscsi_target_name(volume)
+        target_group_name = 'tg-%s' % volume['name']
+
+        if self._view_exists(luid):
+            self._run_ssh("pfexec /usr/sbin/stmfadm remove-view -l %s -a" %
+                          (luid))
+
+        if self._iscsi_target_exists(iscsi_name):
+            self._run_ssh("pfexec /usr/sbin/stmfadm offline-target %s" %
+                          (iscsi_name))
+            self._run_ssh("pfexec /usr/sbin/itadm delete-target %s" %
+                          (iscsi_name))
+
+        # We don't delete the tg-member; we delete the whole tg!
+
+        if self._target_group_exists(target_group_name):
+            self._run_ssh("pfexec /usr/sbin/stmfadm delete-tg %s" %
+                          (target_group_name))
+
+        if self._is_lu_created(volume):
+            self._run_ssh("pfexec /usr/sbin/sbdadm delete-lu %s" %
+                          (luid))
+
+
+
