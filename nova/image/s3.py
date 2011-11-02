@@ -94,8 +94,11 @@ class S3ImageService(service.BaseImageService):
                                                aws_secret_access_key=secret,
                                                is_secure=False,
                                                calling_format=calling,
-                                               port=FLAGS.s3_port,
-                                               host=FLAGS.s3_host)
+        # NOTE(dparrilla): use listen port and dmz host to avoid calls
+        #                  to Apache server
+                                               port=FLAGS.s3_listen_port,
+                                               host=FLAGS.s3_dmz
+        )
 
     @staticmethod
     def _download_file(bucket, filename, local_dir):
