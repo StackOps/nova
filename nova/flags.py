@@ -274,7 +274,8 @@ DEFINE_string('aws_secret_access_key', 'admin', 'AWS Access Key')
 DEFINE_list('glance_api_servers',
             ['%s:9292' % _get_my_ip()],
             'list of glance api servers available to nova (host:port)')
-DEFINE_integer('s3_port', 3333, 's3 port')
+DEFINE_integer('s3_port', 3333, 's3 port (for infrastructure)')
+DEFINE_integer('s3_listen_port', 3333, 's3 listen port (for instances)')
 DEFINE_string('s3_host', '$my_ip', 's3 host (for infrastructure)')
 DEFINE_string('s3_dmz', '$my_ip', 's3 dmz ip (for instances)')
 DEFINE_string('compute_topic', 'compute', 'the topic compute nodes listen on')

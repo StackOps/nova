@@ -45,8 +45,6 @@ from nova.objectstore import s3server
 FLAGS = flags.FLAGS
 flags.DEFINE_string('s3_listen_host', "0.0.0.0",
                     'IP address for ObjectStore API to listen')
-flags.DEFINE_integer('s3_listen_port', 3333, 'port for ObjectStore to listen')
-
 
 if __name__ == '__main__':
     utils.default_flagfile()
