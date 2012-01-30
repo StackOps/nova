@@ -283,10 +283,10 @@ class IptablesManager(object):
         self.ipv4['nat'].add_rule('nova-postrouting-bottom', '-j $snat',
                                   wrap=False)
 
-        # And then we add a floating-snat chain and jump to first thing in
+        # And then we add a float-snat chain and jump to first thing in
         # the snat chain.
-        self.ipv4['nat'].add_chain('floating-snat')
-        self.ipv4['nat'].add_rule('snat', '-j $floating-snat')
+        self.ipv4['nat'].add_chain('float-snat')
+        self.ipv4['nat'].add_rule('snat', '-j $float-snat')
 
     @utils.synchronized('iptables', external=True)
     def apply(self):
@@ -459,7 +459,7 @@ def remove_floating_forward(floating_ip, fixed_ip):
 def floating_forward_rules(floating_ip, fixed_ip):
     return [('PREROUTING', '-d %s -j DNAT --to %s' % (floating_ip, fixed_ip)),
             ('OUTPUT', '-d %s -j DNAT --to %s' % (floating_ip, fixed_ip)),
-            ('floating-snat',
+            ('float-snat',
              '-s %s -j SNAT --to %s' % (fixed_ip, floating_ip))]
 
 
@@ -876,6 +876,8 @@ class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
                           network['bridge_interface'],
                           network)
 
+        # NOTE(vish): applying here so we don't get a lock conflict
+        iptables_manager.apply()
         return network['bridge']
 
     def unplug(self, network):
@@ -946,14 +948,14 @@ class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
 
             # NOTE(vish): This will break if there is already an ip on the
             #             interface, so we move any ips to the bridge
-            gateway = None
+            old_gateway = None
             out, err = _execute('route', '-n', run_as_root=True)
             for line in out.split('\n'):
                 fields = line.split()
                 if fields and fields[0] == '0.0.0.0' and \
                                 fields[-1] == interface:
-                    gateway = fields[1]
-                    _execute('route', 'del', 'default', 'gw', gateway,
+                    old_gateway = fields[1]
+                    _execute('route', 'del', 'default', 'gw', old_gateway,
                              'dev', interface, check_exit_code=False,
                              run_as_root=True)
             out, err = _execute('ip', 'addr', 'show', 'dev', interface,
@@ -966,8 +968,8 @@ class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
                                 run_as_root=True)
                     _execute(*_ip_bridge_cmd('add', params, bridge),
                                 run_as_root=True)
-            if gateway:
-                _execute('route', 'add', 'default', 'gw', gateway,
+            if old_gateway:
+                _execute('route', 'add', 'default', 'gw', old_gateway,
                             run_as_root=True)
 
             if (err and err != "device %s is already a member of a bridge;"
@@ -993,7 +995,7 @@ class LinuxOVSInterfaceDriver(LinuxNetInterfaceDriver):
                         '--', '--may-exist', 'add-port', bridge, dev,
                         '--', 'set', 'Interface', dev, "type=internal",
                         '--', 'set', 'Interface', dev,
-                                "external-ids:iface-id=nova-%s" % dev,
+                                "external-ids:iface-id=%s" % dev,
                         '--', 'set', 'Interface', dev,
                                 "external-ids:iface-status=active",
                         '--', 'set', 'Interface', dev,

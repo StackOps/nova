@@ -487,11 +487,16 @@ class Resource(wsgi.Application):
             return faults.Fault(webob.exc.HTTPBadRequest(explanation=msg))
 
         project_id = args.pop("project_id", None)
-        if 'nova.context' in request.environ and project_id:
-            request.environ['nova.context'].project_id = project_id
+        if ('nova.context' in request.environ and project_id
+            and project_id != request.environ['nova.context'].project_id):
+            msg = _("Malformed request url")
+            return faults.Fault(webob.exc.HTTPBadRequest(explanation=msg))
 
         try:
             action_result = self.dispatch(request, action, args)
+        except faults.Fault as ex:
+            LOG.info(_("Fault thrown: %s"), unicode(ex))
+            action_result = ex
         except webob.exc.HTTPException as ex:
             LOG.info(_("HTTP exception thrown: %s"), unicode(ex))
             action_result = faults.Fault(ex)

@@ -42,6 +42,7 @@ from nova.compute import vm_states
 import nova.db.api
 import nova.scheduler.api
 from nova.db.sqlalchemy.models import Instance
+from nova.db.sqlalchemy.models import InstanceActions
 from nova.db.sqlalchemy.models import InstanceMetadata
 import nova.image.fake
 import nova.rpc
@@ -229,6 +230,19 @@ def fake_compute_api(cls, req, id):
     return True
 
 
+_fake_compute_actions = [
+    dict(
+        created_at=str(datetime.datetime(2010, 11, 11, 11, 0, 0)),
+        action='Fake Action',
+        error='Fake Error',
+        )
+    ]
+
+
+def fake_compute_actions(_1, _2, _3):
+    return [InstanceActions(**a) for a in _fake_compute_actions]
+
+
 def find_host(self, context, instance_id):
     return "nova"
 
@@ -272,7 +286,7 @@ class ServersTest(test.TestCase):
         self.stubs.Set(nova.compute.API, 'suspend', fake_compute_api)
         self.stubs.Set(nova.compute.API, 'resume', fake_compute_api)
         self.stubs.Set(nova.compute.API, "get_diagnostics", fake_compute_api)
-        self.stubs.Set(nova.compute.API, "get_actions", fake_compute_api)
+        self.stubs.Set(nova.compute.API, "get_actions", fake_compute_actions)
 
         self.webreq = common.webob_factory('/v1.0/servers')
         self.config_drive = None
@@ -1218,7 +1232,8 @@ class ServersTest(test.TestCase):
                        fake_get_all)
         self.flags(allow_admin_api=True)
 
-        req = webob.Request.blank('/v1.1/fake/servers?tenant_id=faketenant')
+        req = webob.Request.blank(
+            '/v1.1/testproject/servers?tenant_id=faketenant')
         # Use admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=True)
@@ -1340,7 +1355,7 @@ class ServersTest(test.TestCase):
         self.stubs.Set(nova.compute.API, 'get_all', fake_get_all)
 
         query_str = "name=foo&ip=10.*&status=active&unknown_option=meow"
-        req = webob.Request.blank('/v1.1/fake/servers?%s' % query_str)
+        req = webob.Request.blank('/v1.1/testproject/servers?%s' % query_str)
         # Request admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=True)
@@ -1374,7 +1389,7 @@ class ServersTest(test.TestCase):
         self.stubs.Set(nova.compute.API, 'get_all', fake_get_all)
 
         query_str = "name=foo&ip=10.*&status=active&unknown_option=meow"
-        req = webob.Request.blank('/v1.1/fake/servers?%s' % query_str)
+        req = webob.Request.blank('/v1.1/testproject/servers?%s' % query_str)
         # Request admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=False)
@@ -1407,7 +1422,7 @@ class ServersTest(test.TestCase):
         self.stubs.Set(nova.compute.API, 'get_all', fake_get_all)
 
         query_str = "name=foo&ip=10.*&status=active&unknown_option=meow"
-        req = webob.Request.blank('/v1.1/fake/servers?%s' % query_str)
+        req = webob.Request.blank('/v1.1/testproject/servers?%s' % query_str)
         # Request admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=True)
@@ -1433,7 +1448,7 @@ class ServersTest(test.TestCase):
 
         self.stubs.Set(nova.compute.API, 'get_all', fake_get_all)
 
-        req = webob.Request.blank('/v1.1/fake/servers?ip=10\..*')
+        req = webob.Request.blank('/v1.1/testproject/servers?ip=10\..*')
         # Request admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=True)
@@ -1459,7 +1474,7 @@ class ServersTest(test.TestCase):
 
         self.stubs.Set(nova.compute.API, 'get_all', fake_get_all)
 
-        req = webob.Request.blank('/v1.1/fake/servers?ip6=ffff.*')
+        req = webob.Request.blank('/v1.1/testproject/servers?ip6=ffff.*')
         # Request admin context
         context = nova.context.RequestContext('testuser', 'testproject',
                 is_admin=True)
@@ -1632,7 +1647,7 @@ class ServersTest(test.TestCase):
             raise exception.InstanceSnapshotting
         self.stubs.Set(nova.compute.API, 'snapshot', snapshot)
 
-        req = webob.Request.blank('/v1.1/fakes/servers/1/action')
+        req = webob.Request.blank('/v1.1/fake/servers/1/action')
         req.method = 'POST'
         req.body = json.dumps({
             "createImage": {
@@ -1705,8 +1720,8 @@ class ServersTest(test.TestCase):
         self._setup_for_create_instance()
 
         # proper local hrefs must start with 'http://localhost/v1.1/'
-        image_href = 'http://localhost/v1.1/123/images/2'
-        flavor_ref = 'http://localhost/123/flavors/3'
+        image_href = 'http://localhost/v1.1/fake/images/2'
+        flavor_ref = 'http://localhost/fake/flavors/3'
         access_ipv4 = '1.2.3.4'
         access_ipv6 = 'fead::1234'
         expected_flavor = {
@@ -1714,7 +1729,7 @@ class ServersTest(test.TestCase):
             "links": [
                 {
                     "rel": "bookmark",
-                    "href": 'http://localhost/123/flavors/3',
+                    "href": 'http://localhost/fake/flavors/3',
                 },
             ],
         }
@@ -1723,7 +1738,7 @@ class ServersTest(test.TestCase):
             "links": [
                 {
                     "rel": "bookmark",
-                    "href": 'http://localhost/123/images/2',
+                    "href": 'http://localhost/fake/images/2',
                 },
             ],
         }
@@ -1747,7 +1762,7 @@ class ServersTest(test.TestCase):
             },
         }
 
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -1770,7 +1785,7 @@ class ServersTest(test.TestCase):
 
         # proper local hrefs must start with 'http://localhost/v1.1/'
         image_href = 'http://localhost/v1.1/images/2'
-        flavor_ref = 'http://localhost/123/flavors/3'
+        flavor_ref = 'http://localhost/fake/flavors/3'
         expected_flavor = {
             "id": "3",
             "links": [
@@ -1875,13 +1890,13 @@ class ServersTest(test.TestCase):
     def test_create_instance_v1_1_invalid_flavor_id_int(self):
         self._setup_for_create_instance()
 
-        image_href = 'http://localhost/v1.1/123/images/2'
+        image_href = 'http://localhost/v1.1/fake/images/2'
         flavor_ref = -1
         body = dict(server=dict(
             name='server_test', imageRef=image_href, flavorRef=flavor_ref,
             metadata={'hello': 'world', 'open': 'stack'},
             personality={}))
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -1908,8 +1923,8 @@ class ServersTest(test.TestCase):
         self.config_drive = True
         self._setup_for_create_instance()
 
-        image_href = 'http://localhost/v1.1/123/images/2'
-        flavor_ref = 'http://localhost/v1.1/123/flavors/3'
+        image_href = 'http://localhost/v1.1/fake/images/2'
+        flavor_ref = 'http://localhost/v1.1/fake/flavors/3'
         body = {
             'server': {
                 'name': 'config_drive_test',
@@ -1924,7 +1939,7 @@ class ServersTest(test.TestCase):
             },
         }
 
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -1940,8 +1955,8 @@ class ServersTest(test.TestCase):
         self.config_drive = 2
         self._setup_for_create_instance()
 
-        image_href = 'http://localhost/v1.1/123/images/2'
-        flavor_ref = 'http://localhost/v1.1/123/flavors/3'
+        image_href = 'http://localhost/v1.1/fake/images/2'
+        flavor_ref = 'http://localhost/v1.1/fake/flavors/3'
         body = {
             'server': {
                 'name': 'config_drive_test',
@@ -1956,7 +1971,7 @@ class ServersTest(test.TestCase):
             },
         }
 
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -1973,8 +1988,8 @@ class ServersTest(test.TestCase):
         self.config_drive = "asdf"
         self._setup_for_create_instance()
 
-        image_href = 'http://localhost/v1.1/123/images/2'
-        flavor_ref = 'http://localhost/v1.1/123/flavors/3'
+        image_href = 'http://localhost/v1.1/fake/images/2'
+        flavor_ref = 'http://localhost/v1.1/fake/flavors/3'
         body = {
             'server': {
                 'name': 'config_drive_test',
@@ -1989,7 +2004,7 @@ class ServersTest(test.TestCase):
             },
         }
 
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -2000,8 +2015,8 @@ class ServersTest(test.TestCase):
     def test_create_instance_without_config_drive_v1_1(self):
         self._setup_for_create_instance()
 
-        image_href = 'http://localhost/v1.1/123/images/2'
-        flavor_ref = 'http://localhost/v1.1/123/flavors/3'
+        image_href = 'http://localhost/v1.1/fake/images/2'
+        flavor_ref = 'http://localhost/v1.1/fake/flavors/3'
         body = {
             'server': {
                 'name': 'config_drive_test',
@@ -2016,7 +2031,7 @@ class ServersTest(test.TestCase):
             },
         }
 
-        req = webob.Request.blank('/v1.1/123/servers')
+        req = webob.Request.blank('/v1.1/fake/servers')
         req.method = 'POST'
         req.body = json.dumps(body)
         req.headers["content-type"] = "application/json"
@@ -2249,7 +2264,7 @@ class ServersTest(test.TestCase):
                 return_server_with_attributes(name='server_test',
                                               access_ipv4='0.0.0.0',
                                               access_ipv6='beef::0123'))
-        req = webob.Request.blank('/v1.1/123/servers/1')
+        req = webob.Request.blank('/v1.1/fake/servers/1')
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {
@@ -2282,7 +2297,7 @@ class ServersTest(test.TestCase):
     def test_update_server_access_ipv4_v1_1(self):
         self.stubs.Set(nova.db.api, 'instance_get',
                 return_server_with_attributes(access_ipv4='0.0.0.0'))
-        req = webob.Request.blank('/v1.1/123/servers/1')
+        req = webob.Request.blank('/v1.1/fake/servers/1')
         req.method = 'PUT'
         req.content_type = 'application/json'
         req.body = json.dumps({'server': {'accessIPv4': '0.0.0.0'}})
@@ -2295,7 +2310,7 @@ class ServersTest(test.TestCase):
     def test_update_server_access_ipv6_v1_1(self):
         self.stubs.Set(nova.db.api, 'instance_get',
                 return_server_with_attributes(access_ipv6='beef::0123'))
-        req = webob.Request.blank('/v1.1/123/servers/1')
+        req = webob.Request.blank('/v1.1/fake/servers/1')
         req.method = 'PUT'
         req.content_type = 'application/json'
         req.body = json.dumps({'server': {'accessIPv6': 'beef::0123'}})
@@ -2416,6 +2431,25 @@ class ServersTest(test.TestCase):
             self.assertEqual(s['flavor'], expected_flavor)
             self.assertEqual(s['status'], 'BUILD')
             self.assertEqual(s['metadata']['seq'], str(i))
+
+    def test_server_actions(self):
+        req = webob.Request.blank('/v1.1/fake/servers/%s/actions' % FAKE_UUID)
+        req.method = "GET"
+        res = req.get_response(fakes.wsgi_app())
+        res_dict = json.loads(res.body)
+        self.assertEqual(res_dict, {'actions': _fake_compute_actions})
+
+    def test_server_actions_after_reboot(self):
+        """
+        Bug #897091 was this failure mode -- the /actions call failed if
+        /action had been called first.
+        """
+        req = webob.Request.blank('/v1.1/fake/servers/%s/action' % FAKE_UUID)
+        req.method = 'POST'
+        req.body = json.dumps(dict(reboot=dict(type="HARD")))
+        req.headers["content-type"] = "application/json"
+        req.get_response(fakes.wsgi_app())
+        self.test_server_actions()
 
     def test_get_all_server_details_with_host(self):
         '''

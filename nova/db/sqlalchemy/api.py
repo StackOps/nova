@@ -626,15 +626,12 @@ def floating_ip_get_all_by_project(context, project_id):
     authorize_project_context(context, project_id)
     session = get_session()
     # TODO(tr3buchet): why do we not want auto_assigned floating IPs here?
-    floating_ip_refs = session.query(models.FloatingIp).\
-                               options(joinedload_all('fixed_ip.instance')).\
-                               filter_by(project_id=project_id).\
-                               filter_by(auto_assigned=False).\
-                               filter_by(deleted=False).\
-                               all()
-    if not floating_ip_refs:
-        raise exception.FloatingIpNotFoundForProject(project_id=project_id)
-    return floating_ip_refs
+    return session.query(models.FloatingIp).\
+                         options(joinedload_all('fixed_ip.instance')).\
+                         filter_by(project_id=project_id).\
+                         filter_by(auto_assigned=False).\
+                         filter_by(deleted=False).\
+                         all()
 
 
 @require_context
@@ -747,6 +744,16 @@ def fixed_ip_create(_context, values):
     fixed_ip_ref.update(values)
     fixed_ip_ref.save()
     return fixed_ip_ref['address']
+
+
+@require_context
+def fixed_ip_bulk_create(_context, ips):
+    session = get_session()
+    with session.begin():
+        for ip in ips:
+            model = models.FixedIp()
+            model.update(ip)
+            session.add(model)
 
 
 @require_context
@@ -1754,6 +1761,7 @@ def network_count_reserved_ips(context, network_id):
 @require_admin_context
 def network_create_safe(context, values):
     network_ref = models.Network()
+    network_ref['uuid'] = str(utils.gen_uuid())
     network_ref.update(values)
     try:
         network_ref.save()

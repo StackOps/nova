@@ -179,7 +179,7 @@ class RPCAllocateFixedIP(object):
         perform network lookup on the far side of rpc.
         """
         network = self.db.network_get(context, network_id)
-        self.allocate_fixed_ip(context, instance_id, network, **kwargs)
+        return self.allocate_fixed_ip(context, instance_id, network, **kwargs)
 
 
 class FloatingIP(object):
@@ -234,8 +234,8 @@ class FloatingIP(object):
 
             # call to correct network host to associate the floating ip
             self.network_api.associate_floating_ip(context,
-                                              floating_ip,
-                                              fixed_ip,
+                                              floating_ip['address'],
+                                              fixed_ip['address'],
                                               affect_auto_assigned=True)
         return ips
 
@@ -250,14 +250,19 @@ class FloatingIP(object):
         LOG.debug(_("floating IP deallocation for instance |%s|"), instance_id,
                                                                context=context)
 
-        fixed_ips = self.db.fixed_ip_get_by_instance(context, instance_id)
+        try:
+            fixed_ips = self.db.fixed_ip_get_by_instance(context, instance_id)
+        except exception.FixedIpNotFoundForInstance:
+            fixed_ips = []
         # add to kwargs so we can pass to super to save a db lookup there
         kwargs['fixed_ips'] = fixed_ips
         for fixed_ip in fixed_ips:
             # disassociate floating ips related to fixed_ip
             for floating_ip in fixed_ip.floating_ips:
                 address = floating_ip['address']
-                self.network_api.disassociate_floating_ip(context, address)
+                self.network_api.disassociate_floating_ip(context,
+                                                          address,
+                                                          True)
                 # deallocate if auto_assigned
                 if floating_ip['auto_assigned']:
                     self.network_api.release_floating_ip(context,
@@ -757,6 +762,8 @@ class NetworkManager(manager.SchedulerDependentManager):
             net['dns1'] = dns1
             net['dns2'] = dns2
 
+            net['project_id'] = kwargs.get('project_id')
+
             if num_networks > 1:
                 net['label'] = '%s_%d' % (label, index)
             else:
@@ -833,15 +840,18 @@ class NetworkManager(manager.SchedulerDependentManager):
         top_reserved = self._top_reserved_ips
         project_net = netaddr.IPNetwork(network['cidr'])
         num_ips = len(project_net)
+        ips = []
         for index in range(num_ips):
             address = str(project_net[index])
-            if index < bottom_reserved or num_ips - index < top_reserved:
+            if index < bottom_reserved or num_ips - index <= top_reserved:
                 reserved = True
             else:
                 reserved = False
-            self.db.fixed_ip_create(context, {'network_id': network_id,
-                                              'address': address,
-                                              'reserved': reserved})
+
+            ips.append({'network_id': network_id,
+                        'address': address,
+                        'reserved': reserved})
+        self.db.fixed_ip_bulk_create(context, ips)
 
     def _allocate_fixed_ips(self, context, instance_id, host, networks,
                             **kwargs):
@@ -1017,6 +1027,7 @@ class VlanManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
             self.db.fixed_ip_associate(context,
                                        address,
                                        instance_id,
+                                       network['id'],
                                        reserved=True)
         else:
             address = kwargs.get('address', None)

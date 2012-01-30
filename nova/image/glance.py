@@ -117,7 +117,7 @@ def get_glance_client(context, image_href):
 class GlanceImageService(service.BaseImageService):
     """Provides storage and retrieval of disk image objects within Glance."""
 
-    GLANCE_ONLY_ATTRS = ['size', 'location', 'disk_format',
+    GLANCE_ONLY_ATTRS = ['size', 'disk_format',
                          'container_format', 'checksum']
 
     # NOTE(sirp): Overriding to use _translate_to_service provided by
@@ -295,10 +295,28 @@ class GlanceImageService(service.BaseImageService):
         """Delete the given image.
 
         :raises: ImageNotFound if the image does not exist.
+        :raises: NotAuthorized if the user is not an owner.
 
         """
         # NOTE(vish): show is to check if image is available
-        self.show(context, image_id)
+        image_meta = self.show(context, image_id)
+
+        if FLAGS.use_deprecated_auth:
+            # NOTE(parthi): only allow image deletions if the user
+            # is a member of the project owning the image, in case of
+            # setup without keystone
+            # TODO Currently this access control breaks if
+            # 1. Image is not owned by a project
+            # 2. Deleting user is not bound a project
+            properties = image_meta['properties']
+            if (context.project_id and ('project_id' in properties)
+                and (context.project_id != properties['project_id'])):
+                raise exception.NotAuthorized(_("Not the image owner"))
+
+            if (context.project_id and ('owner_id' in properties)
+                and (context.project_id != properties['owner_id'])):
+                raise exception.NotAuthorized(_("Not the image owner"))
+
         try:
             result = self._get_client(context).delete_image(image_id)
         except glance_exception.NotFound:
@@ -361,7 +379,7 @@ def _parse_glance_iso8601_timestamp(timestamp):
             pass
 
     raise ValueError(_('%(timestamp)s does not follow any of the '
-                       'signatures: %(ISO_FORMATS)s') % locals())
+                       'signatures: %(iso_formats)s') % locals())
 
 
 # TODO(yamahata): use block-device-mapping extension to glance

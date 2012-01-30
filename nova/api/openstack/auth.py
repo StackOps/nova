@@ -16,6 +16,7 @@
 #    under the License.
 
 import hashlib
+import os
 import time
 
 import webob.exc
@@ -47,7 +48,7 @@ class NoAuthMiddleware(wsgi.Middleware):
             user_id = req.headers.get('X-Auth-User', 'admin')
             project_id = req.headers.get('X-Auth-Project-Id', 'admin')
             if version == '1.1':
-                os_url += '/' + project_id
+                os_url = os.path.join(os_url, project_id)
             res = webob.Response()
             # NOTE(vish): This is expecting and returning Auth(1.1), whereas
             #             keystone uses 2.0 auth.  We should probably allow

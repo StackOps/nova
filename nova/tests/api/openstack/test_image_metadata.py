@@ -41,7 +41,6 @@ class ImageMetaDataTest(test.TestCase):
         'disk_format': None,
         'updated_at': '2011-03-22T17:40:15',
         'id': '1',
-        'location': 'file:///var/lib/glance/images/1',
         'is_public': True,
         'deleted_at': None,
         'properties': {
@@ -57,7 +56,6 @@ class ImageMetaDataTest(test.TestCase):
         'disk_format': None,
         'updated_at': '2011-03-22T17:40:15',
         'id': '2',
-        'location': 'file:///var/lib/glance/images/2',
         'is_public': True,
         'deleted_at': None,
         'properties': {
@@ -73,7 +71,6 @@ class ImageMetaDataTest(test.TestCase):
         'disk_format': None,
         'updated_at': '2011-03-22T17:40:15',
         'id': '3',
-        'location': 'file:///var/lib/glance/images/2',
         'is_public': True,
         'deleted_at': None,
         'properties': {},
@@ -90,7 +87,7 @@ class ImageMetaDataTest(test.TestCase):
         fakes.stub_out_glance(self.stubs, self.IMAGE_FIXTURES)
 
     def test_index(self):
-        req = webob.Request.blank('/v1.1/123/images/1/metadata')
+        req = webob.Request.blank('/v1.1/fake/images/1/metadata')
         res = req.get_response(fakes.wsgi_app())
         res_dict = json.loads(res.body)
         self.assertEqual(200, res.status_int)

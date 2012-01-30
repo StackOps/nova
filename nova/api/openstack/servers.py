@@ -207,7 +207,7 @@ class Controller(object):
     def action(self, req, id, body):
         """Multi-purpose method used to take actions on a server"""
 
-        self.actions = {
+        _actions = {
             'changePassword': self._action_change_password,
             'reboot': self._action_reboot,
             'resize': self._action_resize,
@@ -221,11 +221,11 @@ class Controller(object):
             admin_actions = {
                 'createBackup': self._action_create_backup,
             }
-            self.actions.update(admin_actions)
+            _actions.update(admin_actions)
 
         for key in body:
-            if key in self.actions:
-                return self.actions[key](body, req, id)
+            if key in _actions:
+                return _actions[key](body, req, id)
             else:
                 msg = _("There is no such server action: %s") % (key,)
                 raise exc.HTTPBadRequest(explanation=msg)
@@ -713,24 +713,6 @@ class ControllerV11(Controller):
             LOG.debug(msg)
             raise exc.HTTPBadRequest(explanation=msg)
 
-    def _decode_personalities(self, personalities):
-        """Decode the Base64-encoded personalities."""
-        for personality in personalities:
-            try:
-                path = personality["path"]
-                contents = personality["contents"]
-            except (KeyError, TypeError):
-                msg = _("Unable to parse personality path/contents.")
-                LOG.info(msg)
-                raise exc.HTTPBadRequest(explanation=msg)
-
-            try:
-                personality["contents"] = base64.b64decode(contents)
-            except TypeError:
-                msg = _("Personality content could not be Base64 decoded.")
-                LOG.info(msg)
-                raise exc.HTTPBadRequest(explanation=msg)
-
     def _update(self, context, req, id, inst_dict):
         instance = self.compute_api.routing_get(context, id)
         return self._build_view(req, instance, is_detail=True)
@@ -758,13 +740,16 @@ class ControllerV11(Controller):
             LOG.debug(msg)
             raise exc.HTTPBadRequest(explanation=msg)
 
-        personalities = info["rebuild"].get("personality", [])
+        personality = info["rebuild"].get("personality", [])
+        injected_files = []
+        if personality:
+            injected_files = self.helper._get_injected_files(personality)
+
         metadata = info["rebuild"].get("metadata")
         name = info["rebuild"].get("name")
 
         if metadata:
             self._validate_metadata(metadata)
-        self._decode_personalities(personalities)
 
         password = info["rebuild"].get("adminPass",
                                        utils.generate_password(16))
@@ -772,7 +757,7 @@ class ControllerV11(Controller):
         try:
             self.compute_api.rebuild(context, instance_id, image_href,
                                      password, name=name, metadata=metadata,
-                                     files_to_inject=personalities)
+                                     files_to_inject=injected_files)
         except exception.RebuildRequiresActiveInstance:
             msg = _("Instance %s must be active to rebuild.") % instance_id
             raise exc.HTTPConflict(explanation=msg)

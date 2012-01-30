@@ -210,6 +210,17 @@ class FlatNetworkTestCase(test.TestCase):
         self.mox.ReplayAll()
         self.network.validate_networks(self.context, requested_networks)
 
+    def test_validate_reserved(self):
+        context_admin = context.RequestContext('testuser', 'testproject',
+                                              is_admin=True)
+        nets = self.network.create_networks(context_admin, 'fake',
+                                       '192.168.0.0/24', False, 1,
+                                       256, None, None, None, None )
+        self.assertEqual(1, len(nets))
+        network = nets[0]
+        self.assertEqual(3, db.network_count_reserved_ips(context_admin,
+                        network['id']))
+
     def test_validate_networks_none_requested_networks(self):
         self.network.validate_networks(self.context, None)
 
@@ -298,6 +309,7 @@ class VlanNetworkTestCase(test.TestCase):
         db.fixed_ip_associate(mox.IgnoreArg(),
                               mox.IgnoreArg(),
                               mox.IgnoreArg(),
+                              mox.IgnoreArg(),
                               reserved=True).AndReturn('192.168.0.1')
         db.fixed_ip_update(mox.IgnoreArg(),
                            mox.IgnoreArg(),
@@ -309,6 +321,19 @@ class VlanNetworkTestCase(test.TestCase):
         network = dict(networks[0])
         network['vpn_private_address'] = '192.168.0.2'
         self.network.allocate_fixed_ip(None, 0, network, vpn=True)
+
+    def test_vpn_allocate_fixed_ip_no_network_id(self):
+        network = dict(networks[0])
+        network['vpn_private_address'] = '192.168.0.2'
+        network['id'] = None
+        context_admin = context.RequestContext('testuser', 'testproject',
+                is_admin=True)
+        self.assertRaises(exception.FixedIpNotFoundForNetwork,
+                self.network.allocate_fixed_ip,
+                context_admin,
+                0,
+                network,
+                vpn=True)
 
     def test_allocate_fixed_ip(self):
         self.mox.StubOutWithMock(db, 'fixed_ip_associate_pool')
@@ -718,3 +743,63 @@ class CommonNetworkTestCase(test.TestCase):
         args = [None, 'foo', cidr, None, 10, 256, 'fd00::/48', None, None,
                 None]
         self.assertTrue(manager.create_networks(*args))
+
+
+class TestRPCFixedManager(network_manager.RPCAllocateFixedIP,
+        network_manager.NetworkManager):
+    """Dummy manager that implements RPCAllocateFixedIP"""
+
+
+class RPCAllocateTestCase(test.TestCase):
+    """Tests nova.network.manager.RPCAllocateFixedIP"""
+    def setUp(self):
+        super(RPCAllocateTestCase, self).setUp()
+        self.rpc_fixed = TestRPCFixedManager()
+        self.context = context.RequestContext('fake', 'fake')
+
+    def test_rpc_allocate(self):
+        """Test to verify bug 855030 doesn't resurface.
+
+        Mekes sure _rpc_allocate_fixed_ip returns a value so the call
+        returns properly and the greenpool completes."""
+        address = '10.10.10.10'
+
+        def fake_allocate(*args, **kwargs):
+            return address
+
+        def fake_network_get(*args, **kwargs):
+            return {}
+
+        self.stubs.Set(self.rpc_fixed, 'allocate_fixed_ip', fake_allocate)
+        self.stubs.Set(self.rpc_fixed.db, 'network_get', fake_network_get)
+        rval = self.rpc_fixed._rpc_allocate_fixed_ip(self.context,
+                                                     'fake_instance',
+                                                     'fake_network')
+        self.assertEqual(rval, address)
+
+
+class TestFloatingIPManager(network_manager.FloatingIP,
+        network_manager.NetworkManager):
+    """Dummy manager that implements FloatingIP"""
+
+
+class FloatingIPTestCase(test.TestCase):
+    """Tests nova.network.manager.FloatingIP"""
+    def setUp(self):
+        super(FloatingIPTestCase, self).setUp()
+        self.network = TestFloatingIPManager()
+        self.network.db = db
+        self.project_id = 'testproject'
+        self.context = context.RequestContext('testuser', self.project_id,
+            is_admin=False)
+
+    def test_double_deallocation(self):
+        instance_ref = db.api.instance_create(self.context,
+                {"project_id": self.project_id})
+        # Run it twice to make it fault if it does not handle
+        # instances without fixed networks
+        # If this fails in either, it does not handle having no addresses
+        self.network.deallocate_for_instance(self.context,
+                instance_id=instance_ref['id'])
+        self.network.deallocate_for_instance(self.context,
+                instance_id=instance_ref['id'])

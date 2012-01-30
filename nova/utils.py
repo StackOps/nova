@@ -19,6 +19,7 @@
 
 """Utilities and helper functions."""
 
+import contextlib
 import datetime
 import functools
 import inspect
@@ -36,6 +37,7 @@ import time
 import types
 import uuid
 import pyclbr
+import netaddr
 from xml.sax import saxutils
 
 from eventlet import event
@@ -863,6 +865,26 @@ def is_valid_ipv4(address):
     return True
 
 
+def is_valid_cidr(address):
+    """Check if the provided ipv4 or ipv6 address is a valid
+    CIDR address or not"""
+    try:
+        # Validate the correct CIDR Address
+        netaddr.IPNetwork(address)
+    except netaddr.core.AddrFormatError:
+        return False
+
+    # Prior validation partially verify /xx part
+    # Verify it here
+    ip_segment = address.split('/')
+
+    if (len(ip_segment) <= 1 or
+        ip_segment[1] == ''):
+        return False
+
+    return True
+
+
 def monkey_patch():
     """  If the Flags.monkey_patch set as True,
     this functuion patches a decorator
@@ -910,3 +932,27 @@ def convert_to_list_dict(lst, label):
     if not isinstance(lst, list):
         lst = [lst]
     return [{label: x} for x in lst]
+
+
+@contextlib.contextmanager
+def save_and_reraise_exception():
+    """Save current exception, run some code and then re-raise.
+
+    In some cases the exception context can be cleared, resulting in None
+    being attempted to be reraised after an exception handler is run. This
+    can happen when eventlet switches greenthreads or when running an
+    exception handler, code raises and catches and exception. In both
+    cases the exception context will be cleared.
+
+    To work around this, we save the exception state, run handler code, and
+    then re-raise the original exception. If another exception occurs, the
+    saved exception is logged and the new exception is reraised.
+    """
+    type_, value, traceback = sys.exc_info()
+    try:
+        yield
+    except:
+        LOG.exception(_('Original exception being dropped'),
+                      exc_info=(type_, value, traceback))
+        raise
+    raise type_, value, traceback

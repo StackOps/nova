@@ -20,6 +20,8 @@
 Tests For Compute
 """
 
+import mox
+
 from nova import compute
 from nova.compute import instance_types
 from nova.compute import manager as compute_manager
@@ -38,6 +40,8 @@ from nova import rpc
 from nova import test
 from nova import utils
 from nova.notifier import test_notifier
+from nova.network.quantum import client as quantum_client
+
 
 LOG = logging.getLogger('nova.tests.compute')
 FLAGS = flags.FLAGS
@@ -383,6 +387,34 @@ class ComputeTestCase(test.TestCase):
 
         db.instance_destroy(self.context, instance_id)
 
+    def test_snapshot_fails(self):
+        """Ensure task_state is set to None if snapshot fails"""
+        def fake_snapshot(*args, **kwargs):
+            raise Exception("I don't want to create a snapshot")
+
+        self.stubs.Set(self.compute.driver, 'snapshot', fake_snapshot)
+
+        instance_id = self._create_instance()
+        self.compute.run_instance(self.context, instance_id)
+        self.assertRaises(Exception, self.compute.snapshot_instance,
+                          self.context, instance_id, "failing_snapshot")
+        self._assert_state({'task_state': None})
+        self.compute.terminate_instance(self.context, instance_id)
+
+    def _assert_state(self, state_dict):
+        """Assert state of VM is equal to state passed as parameter"""
+        instances = db.instance_get_all(context.get_admin_context())
+        self.assertEqual(len(instances), 1)
+
+        if 'vm_state' in state_dict:
+            self.assertEqual(state_dict['vm_state'], instances[0]['vm_state'])
+        if 'task_state' in state_dict:
+            self.assertEqual(state_dict['task_state'],
+                             instances[0]['task_state'])
+        if 'power_state' in state_dict:
+            self.assertEqual(state_dict['power_state'],
+                             instances[0]['power_state'])
+
     def test_console_output(self):
         """Make sure we can get console output from instance"""
         instance_id = self._create_instance()
@@ -431,6 +463,7 @@ class ComputeTestCase(test.TestCase):
         self.assertTrue('display_name' in payload)
         self.assertTrue('created_at' in payload)
         self.assertTrue('launched_at' in payload)
+        self.assertTrue(payload['launched_at'])
         self.assertEquals(payload['image_ref'], '1')
         self.compute.terminate_instance(self.context, instance_id)
 
@@ -465,6 +498,51 @@ class ComputeTestCase(test.TestCase):
                           self.compute.run_instance,
                           self.context,
                           instance_id)
+        self.compute.terminate_instance(self.context, instance_id)
+
+    def test_instance_set_to_error_on_uncaught_exception(self):
+        """Test that instance is set to error state when exception is raised"""
+        instance_id = self._create_instance()
+
+        self.mox.StubOutWithMock(self.compute.network_api,
+                                 "allocate_for_instance")
+        self.compute.network_api.allocate_for_instance(mox.IgnoreArg(),
+                                                       mox.IgnoreArg(),
+                                                       requested_networks=None,
+                                                       vpn=False).\
+            AndRaise(quantum_client.QuantumServerException())
+
+        FLAGS.stub_network = False
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(quantum_client.QuantumServerException,
+                          self.compute.run_instance,
+                          self.context,
+                          instance_id)
+
+        instances = db.instance_get_all(context.get_admin_context())
+        self.assertEqual(vm_states.ERROR, instances[0]['vm_state'])
+
+        FLAGS.stub_network = True
+        self.compute.terminate_instance(self.context, instance_id)
+
+    def test_network_is_deallocated_on_spawn_failure(self):
+        """When a spawn fails the network must be deallocated"""
+        instance_id = self._create_instance()
+
+        self.mox.StubOutWithMock(self.compute, "_setup_block_device_mapping")
+        self.compute._setup_block_device_mapping(mox.IgnoreArg(),
+                                                 mox.IgnoreArg()).\
+            AndRaise(rpc.common.RemoteError('', '', ''))
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(rpc.common.RemoteError,
+                          self.compute.run_instance,
+                          self.context,
+                          instance_id)
+
         self.compute.terminate_instance(self.context, instance_id)
 
     def test_lock(self):
@@ -645,6 +723,7 @@ class ComputeTestCase(test.TestCase):
         instance_type_ref = db.instance_type_get(context,
                 inst_ref['instance_type_id'])
         self.assertEqual(instance_type_ref['flavorid'], 1)
+        self.assertEqual(inst_ref['host'], migration_ref['source_compute'])
 
         self.compute.terminate_instance(context, instance_id)
 

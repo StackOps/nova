@@ -35,6 +35,7 @@ terminating it.
 
 """
 
+import contextlib
 import os
 import socket
 import sys
@@ -396,6 +397,23 @@ class ComputeManager(manager.SchedulerDependentManager):
                 self.network_api.deallocate_for_instance(context,
                                     instance)
 
+        def _cleanup():
+            with utils.save_and_reraise_exception():
+                self._instance_update(context,
+                                      instance_id,
+                                      vm_state=vm_states.ERROR)
+                if network_info is not None:
+                    _deallocate_network()
+
+        @contextlib.contextmanager
+        def _logging_error(instance_id, message):
+            try:
+                yield
+            except Exception as error:
+                with utils.save_and_reraise_exception():
+                    LOG.exception(_("Instance '%(instance_id)s' "
+                                   "failed %(message)s.") % locals())
+
         context = context.elevated()
         instance = self.db.instance_get(context, instance_id)
 
@@ -418,14 +436,17 @@ class ComputeManager(manager.SchedulerDependentManager):
         instance['admin_pass'] = kwargs.get('admin_password', None)
 
         is_vpn = instance['image_ref'] == str(FLAGS.vpn_image_id)
-        network_info = _make_network_info()
         try:
+            network_info = None
+            with _logging_error(instance_id, "network setup"):
+                network_info = _make_network_info()
+
             self._instance_update(context,
                                   instance_id,
                                   vm_state=vm_states.BUILDING,
                                   task_state=task_states.BLOCK_DEVICE_MAPPING)
-
-            block_device_info = _make_block_device_info()
+            with _logging_error(instance_id, "block device setup"):
+                block_device_info = _make_block_device_info()
 
             self._instance_update(context,
                                   instance_id,
@@ -433,24 +454,17 @@ class ComputeManager(manager.SchedulerDependentManager):
                                   task_state=task_states.SPAWNING)
 
             # TODO(vish) check to make sure the availability zone matches
-            try:
+            with _logging_error(instance_id, "failed to spawn"):
                 self.driver.spawn(context, instance,
                                   network_info, block_device_info)
-            except Exception as ex:  # pylint: disable=W0702
-                msg = _("Instance '%(instance_id)s' failed to spawn. Is "
-                        "virtualization enabled in the BIOS? Details: "
-                        "%(ex)s") % locals()
-                LOG.exception(msg)
-                _deallocate_network()
-                return
 
             current_power_state = self._get_power_state(context, instance)
-            self._instance_update(context,
-                                  instance_id,
-                                  power_state=current_power_state,
-                                  vm_state=vm_states.ACTIVE,
-                                  task_state=None,
-                                  launched_at=utils.utcnow())
+            instance = self._instance_update(context,
+                                             instance_id,
+                                             power_state=current_power_state,
+                                             vm_state=vm_states.ACTIVE,
+                                             task_state=None,
+                                             launched_at=utils.utcnow())
 
             usage_info = utils.usage_from_instance(instance)
             notifier.notify('compute.%s' % self.host,
@@ -463,17 +477,8 @@ class ComputeManager(manager.SchedulerDependentManager):
             # deleted before it actually got created.  This should
             # be fixed once we have no-db-messaging
             pass
-        except:
-            # NOTE(sirp): 3-arg raise needed since Eventlet clears exceptions
-            # when switching between greenthreads.
-            type_, value, traceback = sys.exc_info()
-            try:
-                _deallocate_network()
-            finally:
-                # FIXME(sirp): when/if
-                # https://github.com/jcrocholl/pep8/pull/27 merges, we can add
-                # a per-line disable flag here for W602
-                raise type_, value, traceback
+        except Exception:
+            _cleanup()
 
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
     def run_instance(self, context, instance_id, **kwargs):
@@ -678,8 +683,10 @@ class ComputeManager(manager.SchedulerDependentManager):
                        'instance: %(instance_id)s (state: %(state)s '
                        'expected: %(running)s)') % locals())
 
-        self.driver.snapshot(context, instance_ref, image_id)
-        self._instance_update(context, instance_id, task_state=None)
+        try:
+            self.driver.snapshot(context, instance_ref, image_id)
+        finally:
+            self._instance_update(context, instance_id, task_state=None)
 
         if image_type == 'snapshot' and rotation:
             raise exception.ImageRotationNotAllowed()
@@ -921,6 +928,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         self._instance_update(context,
                               instance_ref["uuid"],
                               memory_mb=instance_type['memory_mb'],
+                              host=migration_ref['source_compute'],
                               vcpus=instance_type['vcpus'],
                               local_gb=instance_type['local_gb'],
                               instance_type_id=instance_type['id'])
