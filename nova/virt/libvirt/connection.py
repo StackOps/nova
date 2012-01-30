@@ -370,6 +370,13 @@ class LibvirtConnection(driver.ComputeDriver):
                          <source protocol='%s' name='%s'/>
                          <target dev='%s' bus='virtio'/>
                      </disk>""" % (protocol, name, mount_device)
+        # NOTE(stackops): Added 'file' type to support virtual disk files
+        elif type == 'file':
+            xml = """<disk type='file'>
+                         <driver name='qemu' type='qcow2'/>
+                         <source file='%s' />
+                         <target dev='%s' bus='virtio'/>
+                     </disk>""" % (name, mount_device)
         virt_dom.attachDevice(xml)
 
     def _get_disk_xml(self, xml, device):
@@ -1070,6 +1077,10 @@ class LibvirtConnection(driver.ComputeDriver):
         elif ':' in device_path:
             (protocol, name) = device_path.split(':')
             return ('network', protocol, name)
+        # NOTE(stackops): Added file type to support virtual disk files
+        elif FLAGS.volumes_path in device_path:
+            logging.debug('The path of the volume is=%s' % device_path)
+            return ('file', None, device_path)
         else:
             raise exception.InvalidDevicePath(path=device_path)
 
