@@ -21,15 +21,11 @@ The unique thing about a SAN is that we don't expect that we can run the volume
 controller on the SAN hardware.  We expect to access it over SSH or some API.
 """
 
-import os
-import paramiko
 
-from xml.etree import ElementTree
 
 from nova import exception
 from nova import flags
 from nova import log as logging
-from nova.utils import ssh_execute
 from nova.volume.driver import VolumeDriver
 
 LOG = logging.getLogger("nova.volume.driver")
