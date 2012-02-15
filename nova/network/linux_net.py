@@ -65,6 +65,9 @@ flags.DEFINE_string('linuxnet_interface_driver',
                     'Driver used to create ethernet devices.')
 flags.DEFINE_string('linuxnet_ovs_integration_bridge',
                     'br-int', 'Name of Open vSwitch bridge used with linuxnet')
+#STACKOPS: override default bridge interface in the network server
+flags.DEFINE_string('override_bridge_interface',
+                    '', 'Interface used in the network service, if differs from given. Empty means not override')
 flags.DEFINE_bool('send_arp_for_ha', False,
                   'send gratuitous ARPs for HA setup')
 flags.DEFINE_bool('use_single_default_gateway',
@@ -863,17 +866,21 @@ class LinuxNetInterfaceDriver(object):
 class LinuxBridgeInterfaceDriver(LinuxNetInterfaceDriver):
 
     def plug(self, network, mac_address):
+# STACKOPS: Added parameter to override bridge_interface configuration
+        interface_ = network['bridge_interface']
+        if len(FLAGS.override_bridge_interface)>0:
+            interface_ = FLAGS.override_bridge_interface
         if network.get('vlan', None) is not None:
             LinuxBridgeInterfaceDriver.ensure_vlan_bridge(
                            network['vlan'],
                            network['bridge'],
-                           network['bridge_interface'],
+                interface_,
                            network,
                            mac_address)
         else:
             LinuxBridgeInterfaceDriver.ensure_bridge(
                           network['bridge'],
-                          network['bridge_interface'],
+                interface_,
                           network)
 
         # NOTE(vish): applying here so we don't get a lock conflict
