@@ -21,6 +21,9 @@
 Simple Scheduler
 """
 
+import glob
+import os
+
 from nova import db
 from nova import flags
 from nova import utils
@@ -31,20 +34,28 @@ from nova import log as logging
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("max_cores", 16,
-                     "maximum number of instance cores to allow per host")
+    "maximum number of instance cores to allow per host")
 flags.DEFINE_integer("max_gigabytes", 10000,
-                     "maximum number of volume gigabytes to allow per host")
+    "maximum number of volume gigabytes to allow per host")
 flags.DEFINE_integer("max_networks", 1000,
-                     "maximum number of networks to allow per host")
-flags.DEFINE_string("shared_storage_folder", '/var/lib/glance/images', "Shared file storage")
-flags.DEFINE_integer("disk_images_size_gb",20, "Space used for disk images")
+    "maximum number of networks to allow per host")
+flags.DEFINE_string("shared_storage_folder", '/var/lib/nova/volumes', "Shared file storage")
+flags.DEFINE_string("disk_images_folder", "/var/lib/glance/images/", "Images storage folder")
+flags.DEFINE_bool("share_images_and_instances", True, "Share the instances and images folder")
 
 LOG = logging.getLogger('nova.scheduler.vcpuandspace')
 
 class VCPUAndSpaceScheduler(chance.ChanceScheduler):
-    """Implements Naive Scheduler that tries to find least loaded host."""
+    """Implements a Shared folder Scheduler that checks available space in it"""
 
-    def _check_disk_space(self,context):
+    def check_images_size(self, images_path='/var/lib/glance/images/'):
+        total_images_size = 0
+        for name in glob.glob('%s[0-9]*' % images_path):
+            size = os.path.getsize(name)
+            total_images_size += size
+        return total_images_size / 1073741824
+
+    def _check_disk_space(self, context):
         results = db.instance_get_all(context)
         total_vm_disk_size = 0
         for result in results:
@@ -54,10 +65,10 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
         results = db.service_get_all_volume_sorted(context)
         total_volumes_disk_size = 0
         for result in results:
-            (service,volume_gigabytes) = result
+            (service, volume_gigabytes) = result
             total_volumes_disk_size = total_volumes_disk_size + volume_gigabytes
         LOG.debug('Total Volumes disk space = %s' % total_volumes_disk_size)
-	return total_vm_disk_size + total_volumes_disk_size
+        return total_vm_disk_size + total_volumes_disk_size
 
     def _schedule_instance(self, context, instance_id, *_args, **_kwargs):
         """Picks a host that is up and has the fewest running instances."""
@@ -67,7 +78,7 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
             and context.is_admin):
             zone, _x, host = instance_ref['availability_zone'].partition(':')
             service = db.service_get_by_args(context.elevated(), host,
-                                             'nova-compute')
+                'nova-compute')
             if not self.service_is_up(service):
                 raise driver.WillNotSchedule(_("Host %s is not alive") % host)
 
@@ -78,12 +89,14 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
                                                       'scheduled_at': now})
             return host
         fs = statvfs(FLAGS.shared_storage_folder)
-        total_disk_size = (fs.f_blocks*fs.f_bsize / 1073741824) - FLAGS.disk_images_size_gb;
-        LOG.debug('Total disk space = %s' % total_disk_size)
-	disk_space = self._check_disk_space(context)
-	if disk_space > total_disk_size:
-	    raise driver.NoValidHost(_("Not enough space for VMs:%sGB" % disk_space))
-	results = db.service_get_all_compute_sorted(context)
+        total_disk_size = fs.f_blocks * fs.f_frsize / 1073741824
+        if FLAGS.share_images_and_instances:
+            total_disk_size -= self.check_images_size(FLAGS.disk_images_folder)
+        LOG.debug('Total disk space available for instances and volumes= %s' % total_disk_size)
+        disk_space = self._check_disk_space(context)
+        if disk_space > total_disk_size:
+            raise driver.NoValidHost(_("Not enough space for VMs:%sGB" % disk_space))
+        results = db.service_get_all_compute_sorted(context)
         for result in results:
             (service, instance_cores) = result
             if instance_cores + instance_ref['vcpus'] > FLAGS.max_cores:
@@ -93,9 +106,9 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
                 #             can generalize this somehow
                 now = utils.utcnow()
                 db.instance_update(context,
-                                   instance_id,
-                                   {'host': service['host'],
-                                    'scheduled_at': now})
+                    instance_id,
+                        {'host': service['host'],
+                         'scheduled_at': now})
                 return service['host']
         raise driver.NoValidHost(_("Scheduler was unable to locate a host"
                                    " for this request. Is the appropriate"
@@ -115,7 +128,7 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
             and context.is_admin):
             zone, _x, host = volume_ref['availability_zone'].partition(':')
             service = db.service_get_by_args(context.elevated(), host,
-                                             'nova-volume')
+                'nova-volume')
             if not self.service_is_up(service):
                 raise driver.WillNotSchedule(_("Host %s not available") % host)
 
@@ -126,9 +139,11 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
                                                   'scheduled_at': now})
             return host
         fs = statvfs(FLAGS.shared_storage_folder)
-        total_disk_size = (fs.f_blocks*fs.f_bsize / 1073741824) - FLAGS.disk_images_size_gb;
-        LOG.debug('Total disk space = %s' % total_disk_size)
-        disk_space = self._check_disk_space(context) + + volume_ref['size']
+        total_disk_size = fs.f_blocks * fs.f_frsize / 1073741824
+        if FLAGS.share_images_and_instances:
+            total_disk_size -= self.check_images_size(FLAGS.disk_images_folder)
+        LOG.debug('Total disk space available for instances and volumes= %s' % total_disk_size)
+        disk_space = self._check_disk_space(context) + volume_ref['size']
         if disk_space > total_disk_size:
             raise driver.NoValidHost(_("Not enough space for VMs:%sGB" % disk_space))
         results = db.service_get_all_volume_sorted(context)
@@ -139,9 +154,9 @@ class VCPUAndSpaceScheduler(chance.ChanceScheduler):
                 #             can generalize this somehow
                 now = utils.utcnow()
                 db.volume_update(context,
-                                 volume_id,
-                                 {'host': service['host'],
-                                  'scheduled_at': now})
+                    volume_id,
+                        {'host': service['host'],
+                         'scheduled_at': now})
                 return service['host']
         raise driver.NoValidHost(_("Scheduler was unable to locate a host"
                                    " for this request. Is the appropriate"
