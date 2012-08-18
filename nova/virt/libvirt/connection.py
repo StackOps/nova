@@ -144,7 +144,8 @@ libvirt_opts = [
                   'local=nova.virt.libvirt.volume.LibvirtVolumeDriver',
                   'fake=nova.virt.libvirt.volume.LibvirtFakeVolumeDriver',
                   'rbd=nova.virt.libvirt.volume.LibvirtNetVolumeDriver',
-                  'sheepdog=nova.virt.libvirt.volume.LibvirtNetVolumeDriver'
+                  'sheepdog=nova.virt.libvirt.volume.LibvirtNetVolumeDriver',
+                  'file=nova.virt.libvirt.volume.LibvirtFileSystemVolumeDriver'
                   ],
                 help='Libvirt handlers for remote volumes.'),
     cfg.BoolOpt('libvirt_use_virtio_for_bridges',

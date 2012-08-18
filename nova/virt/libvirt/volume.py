@@ -206,3 +206,18 @@ class LibvirtISCSIVolumeDriver(LibvirtVolumeDriver):
                                check_exit_code=[0, 255])
             self._run_iscsiadm(iscsi_properties, ('--op', 'delete'),
                                check_exit_code=[0, 255])
+
+class LibvirtFileSystemVolumeDriver(LibvirtVolumeDriver):
+    """Use virtual disk files as volumes."""
+
+    def connect_volume(self, connection_info, mount_device):
+        """Connect the volume. Returns xml for libvirt."""
+        driver = self._pick_volume_driver()
+        device_path = connection_info['data']['device_path']
+        xml = """<disk type='file'>
+                     <driver name='%s' type='qcow2'/>
+                     <source file='%s'/>
+                     <target dev='%s' bus='virtio'/>
+                 </disk>""" % (driver, device_path, mount_device)
+        return xml
+

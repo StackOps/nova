@@ -59,6 +59,14 @@ class QEMUDriver(VolumeDriver):
             raise exception.Error(_("qemu-img virtual disk creation failed. QEMU Driver cannot be initialized."))
 
 
+    def initialize_connection(self, volume, connector):
+        return {
+            'driver_volume_type': 'file',
+            'data': {
+                'volumes_path': '%s' % FLAGS.volumes_path
+                }
+        }
+
     def create_volume(self, volume):
         """Creates a virtual disk as a volume."""
         self._try_execute('qemu-img', 'create', '-f', 'qcow2', '-o', 'cluster_size=2M',
