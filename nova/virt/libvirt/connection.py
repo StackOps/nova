@@ -224,7 +224,6 @@ class LibvirtConnection(driver.ComputeDriver):
         self._host_state = None
         self._initiator = None
         self._wrapped_conn = None
-        self.container = None
         self.read_only = read_only
         if FLAGS.firewall_driver not in firewall.drivers:
             FLAGS.set_default('firewall_driver', firewall.drivers[0])
@@ -492,7 +491,10 @@ class LibvirtConnection(driver.ComputeDriver):
         LOG.info(_('Deleting instance files %(target)s') % locals(),
                  instance=instance)
         if FLAGS.libvirt_type == 'lxc':
-            disk.destroy_container(self.container)
+            container_dir = os.path.join(FLAGS.instances_path,
+                                         instance['name'],
+                                         'rootfs')
+            disk.destroy_container(container_dir=container_dir)
         if os.path.exists(target):
             shutil.rmtree(target)
 
@@ -536,15 +538,17 @@ class LibvirtConnection(driver.ComputeDriver):
             try:
                 virt_dom.attachDevice(xml)
             except Exception, ex:
-                self.volume_driver_method('disconnect_volume',
-                                           connection_info,
-                                           mount_device)
-
                 if isinstance(ex, libvirt.libvirtError):
                     errcode = ex.get_error_code()
                     if errcode == libvirt.VIR_ERR_OPERATION_FAILED:
+                        self.volume_driver_method('disconnect_volume',
+                                                   connection_info,
+                                                   mount_device)
                         raise exception.DeviceIsBusy(device=mount_device)
-                raise
+                with utils.save_and_reraise_exception():
+                    self.volume_driver_method('disconnect_volume',
+                                               connection_info,
+                                               mount_device)
 
     @staticmethod
     def _get_disk_xml(xml, device):
@@ -715,7 +719,8 @@ class LibvirtConnection(driver.ComputeDriver):
                                      image_file)
 
     @exception.wrap_exception()
-    def reboot(self, instance, network_info, reboot_type='SOFT'):
+    def reboot(self, instance, network_info, reboot_type='SOFT',
+               block_device_info=None):
         """Reboot a virtual machine, given an instance reference."""
         if reboot_type == 'SOFT':
             # NOTE(vish): This will attempt to do a graceful shutdown/restart.
@@ -726,7 +731,8 @@ class LibvirtConnection(driver.ComputeDriver):
             else:
                 LOG.info(_("Failed to soft reboot instance."),
                          instance=instance)
-        return self._hard_reboot(instance, network_info)
+        return self._hard_reboot(instance, network_info,
+                                 block_device_info=block_device_info)
 
     def _soft_reboot(self, instance):
         """Attempt to shutdown and restart the instance gracefully.
@@ -761,7 +767,8 @@ class LibvirtConnection(driver.ComputeDriver):
             greenthread.sleep(1)
         return False
 
-    def _hard_reboot(self, instance, network_info, xml=None):
+    def _hard_reboot(self, instance, network_info, xml=None,
+                     block_device_info=None):
         """Reboot a virtual machine, given an instance reference.
 
         This method actually destroys and re-creates the domain to ensure the
@@ -770,6 +777,17 @@ class LibvirtConnection(driver.ComputeDriver):
         If xml is set, it uses the passed in xml in place of the xml from the
         existing domain.
         """
+
+        block_device_mapping = driver.block_device_info_get_mapping(
+            block_device_info)
+
+        for vol in block_device_mapping:
+            connection_info = vol['connection_info']
+            mount_device = vol['mount_device'].rpartition("/")[2]
+            self.volume_driver_method('connect_volume',
+                                      connection_info,
+                                      mount_device)
+
         virt_dom = self._conn.lookupByName(instance['name'])
         # NOTE(itoumsn): Use XML delived from the running instance
         # instead of using to_xml(instance, network_info). This is almost
@@ -826,11 +844,13 @@ class LibvirtConnection(driver.ComputeDriver):
         dom.create()
 
     @exception.wrap_exception()
-    def resume_state_on_host_boot(self, context, instance, network_info):
+    def resume_state_on_host_boot(self, context, instance, network_info,
+                                  block_device_info=None):
         """resume guest state when a host is booted"""
         # NOTE(dprince): use hard reboot to ensure network and firewall
         # rules are configured
-        self._hard_reboot(instance, network_info)
+        self._hard_reboot(instance, network_info,
+                          block_device_info=block_device_info)
 
     @exception.wrap_exception()
     def rescue(self, context, instance, network_info, image_meta):
@@ -1194,7 +1214,9 @@ class LibvirtConnection(driver.ComputeDriver):
         libvirt_utils.write_to_file(basepath('libvirt.xml'), libvirt_xml)
 
         if FLAGS.libvirt_type == 'lxc':
-            container_dir = '%s/rootfs' % basepath(suffix='')
+            container_dir = os.path.join(FLAGS.instances_path,
+                                         instance['name'],
+                                         'rootfs')
             libvirt_utils.ensure_tree(container_dir)
 
         # NOTE(dprince): for rescue console.log may already exist... chown it.
@@ -1390,9 +1412,9 @@ class LibvirtConnection(driver.ComputeDriver):
                          instance=instance)
 
         if FLAGS.libvirt_type == 'lxc':
-            self.container = disk.setup_container(basepath('disk'),
-                                                  container_dir=container_dir,
-                                                  use_cow=FLAGS.use_cow_images)
+            disk.setup_container(basepath('disk'),
+                                 container_dir=container_dir,
+                                 use_cow=FLAGS.use_cow_images)
 
         if FLAGS.libvirt_type == 'uml':
             libvirt_utils.chown(basepath('disk'), 'root')
@@ -2084,8 +2106,10 @@ class LibvirtConnection(driver.ComputeDriver):
                              None,
                              FLAGS.live_migration_bandwidth)
 
-        except Exception:
+        except Exception as e:
             with utils.save_and_reraise_exception():
+                LOG.error(_("Live Migration failure: %(e)s") % locals(),
+                          instance=instance_ref)
                 recover_method(ctxt, instance_ref, dest, block_migration)
 
         # Waiting for completion of live_migration.
