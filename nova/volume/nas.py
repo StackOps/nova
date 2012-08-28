@@ -73,8 +73,9 @@ class QEMUDriver(VolumeDriver):
         return {
             'driver_volume_type': 'file',
             'data': {
-                'volumes_path': '%s' % FLAGS.volumes_path
-                }
+                'volumes_path': '%s' % FLAGS.volumes_path,
+                'volume': '%s' % volume['name']
+            }
         }
 
     def create_volume(self, volume):

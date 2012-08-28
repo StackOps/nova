@@ -213,7 +213,7 @@ class LibvirtFileSystemVolumeDriver(LibvirtVolumeDriver):
     def connect_volume(self, connection_info, mount_device):
         """Connect the volume. Returns xml for libvirt."""
         driver = self._pick_volume_driver()
-        device_path = connection_info['data']['device_path']
+        device_path = '%s/%s' % (connection_info['data']['volumes_path'],connection_info['data']['volume'])
         xml = """<disk type='file'>
                      <driver name='%s' type='qcow2'/>
                      <source file='%s'/>
