@@ -27,11 +27,21 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova.volume.driver import VolumeDriver
+from nova.openstack.common import cfg
 
 LOG = logging.getLogger("nova.volume.driver")
+
+qemu_opts = [
+    cfg.StrOpt('volumes_path',
+        default='/var/lib/nova/volumes',
+        help='shared directory for the volumes virtual disks'),
+    cfg.StrOpt('volumes_path_testfile',
+        default='/var/lib/nova/volumes/testfile',
+        help='Test file to test if qemu-img works.'),
+    ]
+
 FLAGS = flags.FLAGS
-flags.DEFINE_string('volumes_path', '/var/lib/nova/volumes', 'shared directory for the volumes virtual disks')
-flags.DEFINE_string('volumes_path_testfile', '%s/testfile' % FLAGS.volumes_path, 'Test file to check if qemu-img works')
+FLAGS.register_opts(qemu_opts)
 
 class QEMUDriver(VolumeDriver):
     """Executes commands relating to QEMU virtual disks volumes.
