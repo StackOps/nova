@@ -78,6 +78,9 @@ class QEMUDriver(VolumeDriver):
             }
         }
 
+    def terminate_connection(self, volume, connector):
+        self.LOG('Terminate NAS connection', volume)
+
     def create_volume(self, volume):
         """Creates a virtual disk as a volume."""
         self._try_execute('qemu-img', 'create', '-f', 'qcow2', '-o', 'cluster_size=2M',
