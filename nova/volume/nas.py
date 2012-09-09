@@ -56,15 +56,15 @@ class QEMUDriver(VolumeDriver):
         """Returns an error if prerequisites aren't met"""
         try:
             out, err = self._execute('qemu-img', 'create', '-f', 'qcow2', '-o', 'cluster_size=2M',
-                FLAGS.volumes_path_testfile, '1M')
+                FLAGS.volumes_path_testfile, '1M', run_as_root=True)
             if err:
-                self._execute('rm', FLAGS.volumes_path_testfile)
+                self._execute('rm', FLAGS.volumes_path_testfile, run_as_root=True)
                 raise exception.Error(_("Cannot create the test file in " % FLAGS.volumes_path_testfile))
-            out, err = self._execute('qemu-img', 'info', FLAGS.volumes_path_testfile)
+            out, err = self._execute('qemu-img', 'info', FLAGS.volumes_path_testfile, run_as_root=True)
             if err:
-                self._execute('rm', FLAGS.volumes_path_testfile)
+                self._execute('rm', FLAGS.volumes_path_testfile, run_as_root=True)
                 raise exception.Error(_("Cannot retrieve info about the test file in " % FLAGS.volumes_path_testfile))
-            self._execute('rm', FLAGS.volumes_path_testfile)
+            self._execute('rm', FLAGS.volumes_path_testfile, run_as_root=True)
         except exception.ProcessExecutionError:
             raise exception.Error(_("qemu-img virtual disk creation failed. QEMU Driver cannot be initialized."))
 
@@ -81,21 +81,21 @@ class QEMUDriver(VolumeDriver):
     def create_volume(self, volume):
         """Creates a virtual disk as a volume."""
         self._try_execute('qemu-img', 'create', '-f', 'qcow2', '-o', 'cluster_size=2M',
-            "%s/%s" % (FLAGS.volumes_path, volume['name']), self._sizestr(volume['size']))
+            "%s/%s" % (FLAGS.volumes_path, volume['name']), self._sizestr(volume['size']), run_as_root=True)
 
     def delete_volume(self, volume):
         """Deletes a virtual disk as a  volume. We assume disks without backing files"""
-        self._execute('rm', '%s/%s' % (FLAGS.volumes_path, volume['name']))
+        self._execute('rm', '%s/%s' % (FLAGS.volumes_path, volume['name']), run_as_root=True)
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot from a virtual disk"""
         self._try_execute('qemu-img', 'snapshot', '-c', snapshot['name'],
-            "%s/%s" % (FLAGS.volumes_path, snapshot['volume_name']))
+            "%s/%s" % (FLAGS.volumes_path, snapshot['volume_name']), run_as_root=True)
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot from a virtual disk"""
         self._try_execute('qemu-img', 'snapshot', '-d', snapshot['name'],
-            "%s/%s" % (FLAGS.volumes_path, snapshot['volume_name']))
+            "%s/%s" % (FLAGS.volumes_path, snapshot['volume_name']), run_as_root=True)
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a volume from a snapshot."""
