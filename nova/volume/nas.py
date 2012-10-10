@@ -79,7 +79,7 @@ class QEMUDriver(VolumeDriver):
         }
 
     def terminate_connection(self, volume, connector):
-        self.LOG('Terminate NAS connection', volume)
+        LOG.info('Terminate NAS connection %s', volume)
 
     def create_volume(self, volume):
         """Creates a virtual disk as a volume."""
