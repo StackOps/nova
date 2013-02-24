@@ -20,14 +20,12 @@ from nova.api.openstack.compute.views import images as views_images
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova import exception
-from nova import flags
-import nova.image
-from nova import log as logging
+import nova.image.glance
+from nova.openstack.common import log as logging
 import nova.utils
 
 
 LOG = logging.getLogger(__name__)
-FLAGS = flags.FLAGS
 
 SUPPORTED_FILTERS = {
     'name': 'name',
@@ -96,12 +94,12 @@ class Controller(wsgi.Controller):
     def __init__(self, image_service=None, **kwargs):
         """Initialize new `ImageController`.
 
-        :param image_service: `nova.image.glance:GlancemageService`
+        :param image_service: `nova.image.glance:GlanceImageService`
 
         """
         super(Controller, self).__init__(**kwargs)
         self._image_service = (image_service or
-                               nova.image.get_default_image_service())
+                               nova.image.glance.get_default_image_service())
 
     def _get_filters(self, req):
         """
@@ -146,6 +144,7 @@ class Controller(wsgi.Controller):
             explanation = _("Image not found.")
             raise webob.exc.HTTPNotFound(explanation=explanation)
 
+        req.cache_db_items('images', [image], 'id')
         return self._view_builder.show(req, image)
 
     def delete(self, req, id):
@@ -177,8 +176,8 @@ class Controller(wsgi.Controller):
             params[key] = val
 
         try:
-            images = self._image_service.index(context, filters=filters,
-                                               **page_params)
+            images = self._image_service.detail(context, filters=filters,
+                                                **page_params)
         except exception.Invalid as e:
             raise webob.exc.HTTPBadRequest(explanation=str(e))
         return self._view_builder.index(req, images)
@@ -202,6 +201,7 @@ class Controller(wsgi.Controller):
         except exception.Invalid as e:
             raise webob.exc.HTTPBadRequest(explanation=str(e))
 
+        req.cache_db_items('images', images, 'id')
         return self._view_builder.detail(req, images)
 
     def create(self, *args, **kwargs):

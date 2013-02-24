@@ -20,17 +20,20 @@
 """RequestContext: context for requests that persist through all of nova."""
 
 import copy
+import uuid
 
-from nova import log as logging
+from nova import exception
 from nova.openstack.common import local
-from nova import utils
+from nova.openstack.common import log as logging
+from nova.openstack.common import timeutils
+from nova import policy
 
 
 LOG = logging.getLogger(__name__)
 
 
 def generate_request_id():
-    return 'req-' + str(utils.gen_uuid())
+    return 'req-' + str(uuid.uuid4())
 
 
 class RequestContext(object):
@@ -43,7 +46,8 @@ class RequestContext(object):
     def __init__(self, user_id, project_id, is_admin=None, read_deleted="no",
                  roles=None, remote_address=None, timestamp=None,
                  request_id=None, auth_token=None, overwrite=True,
-                 quota_class=None, **kwargs):
+                 quota_class=None, user_name=None, project_name=None,
+                 service_catalog=[], instance_lock_checked=False, **kwargs):
         """
         :param read_deleted: 'no' indicates deleted records are hidden, 'yes'
             indicates deleted records are visible, 'only' indicates that
@@ -62,23 +66,31 @@ class RequestContext(object):
         self.user_id = user_id
         self.project_id = project_id
         self.roles = roles or []
-        self.is_admin = is_admin
-        if self.is_admin is None:
-            self.is_admin = 'admin' in [x.lower() for x in self.roles]
-        elif self.is_admin and 'admin' not in self.roles:
-            self.roles.append('admin')
         self.read_deleted = read_deleted
         self.remote_address = remote_address
         if not timestamp:
-            timestamp = utils.utcnow()
+            timestamp = timeutils.utcnow()
         if isinstance(timestamp, basestring):
-            timestamp = utils.parse_strtime(timestamp)
+            timestamp = timeutils.parse_strtime(timestamp)
         self.timestamp = timestamp
         if not request_id:
             request_id = generate_request_id()
         self.request_id = request_id
         self.auth_token = auth_token
+        # Only include required parts of service_catalog
+        self.service_catalog = [s for s in service_catalog
+                if s.get('type') in ('volume')]
+        self.instance_lock_checked = instance_lock_checked
+
+        # NOTE(markmc): this attribute is currently only used by the
+        # rs_limits turnstile pre-processor.
+        # See https://lists.launchpad.net/openstack/msg12200.html
         self.quota_class = quota_class
+        self.user_name = user_name
+        self.project_name = project_name
+        self.is_admin = is_admin
+        if self.is_admin is None:
+            self.is_admin = policy.check_is_admin(self)
         if overwrite or not hasattr(local.store, 'context'):
             self.update_store()
 
@@ -107,10 +119,16 @@ class RequestContext(object):
                 'read_deleted': self.read_deleted,
                 'roles': self.roles,
                 'remote_address': self.remote_address,
-                'timestamp': utils.strtime(self.timestamp),
+                'timestamp': timeutils.strtime(self.timestamp),
                 'request_id': self.request_id,
                 'auth_token': self.auth_token,
-                'quota_class': self.quota_class}
+                'quota_class': self.quota_class,
+                'user_name': self.user_name,
+                'service_catalog': self.service_catalog,
+                'project_name': self.project_name,
+                'instance_lock_checked': self.instance_lock_checked,
+                'tenant': self.tenant,
+                'user': self.user}
 
     @classmethod
     def from_dict(cls, values):
@@ -129,6 +147,19 @@ class RequestContext(object):
 
         return context
 
+    # NOTE(sirp): the openstack/common version of RequestContext uses
+    # tenant/user whereas the Nova version uses project_id/user_id. We need
+    # this shim in order to use context-aware code from openstack/common, like
+    # logging, until we make the switch to using openstack/common's version of
+    # RequestContext.
+    @property
+    def tenant(self):
+        return self.project_id
+
+    @property
+    def user(self):
+        return self.user_id
+
 
 def get_admin_context(read_deleted="no"):
     return RequestContext(user_id=None,
@@ -136,3 +167,55 @@ def get_admin_context(read_deleted="no"):
                           is_admin=True,
                           read_deleted=read_deleted,
                           overwrite=False)
+
+
+def is_user_context(context):
+    """Indicates if the request context is a normal user."""
+    if not context:
+        return False
+    if context.is_admin:
+        return False
+    if not context.user_id or not context.project_id:
+        return False
+    return True
+
+
+def require_admin_context(ctxt):
+    """Raise exception.AdminRequired() if context is an admin context."""
+    if not ctxt.is_admin:
+        raise exception.AdminRequired()
+
+
+def require_context(ctxt):
+    """Raise exception.NotAuthorized() if context is not a user or an
+    admin context.
+    """
+    if not ctxt.is_admin and not is_user_context(ctxt):
+        raise exception.NotAuthorized()
+
+
+def authorize_project_context(context, project_id):
+    """Ensures a request has permission to access the given project."""
+    if is_user_context(context):
+        if not context.project_id:
+            raise exception.NotAuthorized()
+        elif context.project_id != project_id:
+            raise exception.NotAuthorized()
+
+
+def authorize_user_context(context, user_id):
+    """Ensures a request has permission to access the given user."""
+    if is_user_context(context):
+        if not context.user_id:
+            raise exception.NotAuthorized()
+        elif context.user_id != user_id:
+            raise exception.NotAuthorized()
+
+
+def authorize_quota_class_context(context, class_name):
+    """Ensures a request has permission to access the given quota class."""
+    if is_user_context(context):
+        if not context.quota_class:
+            raise exception.NotAuthorized()
+        elif context.quota_class != class_name:
+            raise exception.NotAuthorized()

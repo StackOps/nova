@@ -21,19 +21,19 @@ import os
 import signal
 
 from Cheetah import Template
+from oslo.config import cfg
 
 from nova import context
 from nova import db
 from nova import exception
-from nova import flags
-from nova import log as logging
-from nova.openstack.common import cfg
+from nova.openstack.common import log as logging
+from nova import paths
 from nova import utils
 
 
 xvp_opts = [
     cfg.StrOpt('console_xvp_conf_template',
-               default='$pybasedir/nova/console/xvp.conf.template',
+               default=paths.basedir_def('nova/console/xvp.conf.template'),
                help='XVP conf template'),
     cfg.StrOpt('console_xvp_conf',
                default='/etc/xvp.conf',
@@ -49,8 +49,9 @@ xvp_opts = [
                help='port for XVP to multiplex VNC connections on'),
     ]
 
-FLAGS = flags.FLAGS
-FLAGS.register_opts(xvp_opts)
+CONF = cfg.CONF
+CONF.register_opts(xvp_opts)
+CONF.import_opt('host', 'nova.netconf')
 LOG = logging.getLogger(__name__)
 
 
@@ -58,8 +59,8 @@ class XVPConsoleProxy(object):
     """Sets up XVP config, and manages XVP daemon."""
 
     def __init__(self):
-        self.xvpconf_template = open(FLAGS.console_xvp_conf_template).read()
-        self.host = FLAGS.host  # default, set by manager.
+        self.xvpconf_template = open(CONF.console_xvp_conf_template).read()
+        self.host = CONF.host  # default, set by manager.
         super(XVPConsoleProxy, self).__init__()
 
     @property
@@ -71,7 +72,7 @@ class XVPConsoleProxy(object):
         #TODO(mdragon): implement port selection for non multiplex ports,
         #               we are not using that, but someone else may want
         #               it.
-        return FLAGS.console_xvp_multiplex_port
+        return CONF.console_xvp_multiplex_port
 
     def setup_console(self, context, console):
         """Sets up actual proxies."""
@@ -104,7 +105,7 @@ class XVPConsoleProxy(object):
             LOG.debug('No console pools!')
             self._xvp_stop()
             return
-        conf_data = {'multiplex_port': FLAGS.console_xvp_multiplex_port,
+        conf_data = {'multiplex_port': CONF.console_xvp_multiplex_port,
                      'pools': pools,
                      'pass_encode': self.fix_console_password}
         config = str(Template.Template(self.xvpconf_template,
@@ -113,9 +114,13 @@ class XVPConsoleProxy(object):
         self._xvp_restart()
 
     def _write_conf(self, config):
-        LOG.debug(_('Re-wrote %s') % FLAGS.console_xvp_conf)
-        with open(FLAGS.console_xvp_conf, 'w') as cfile:
-            cfile.write(config)
+        try:
+            LOG.debug(_('Re-wrote %s') % CONF.console_xvp_conf)
+            with open(CONF.console_xvp_conf, 'w') as cfile:
+                cfile.write(config)
+        except IOError:
+            LOG.exception(_("Failed to write configuration file"))
+            raise
 
     def _xvp_stop(self):
         LOG.debug(_('Stopping xvp'))
@@ -134,9 +139,9 @@ class XVPConsoleProxy(object):
         LOG.debug(_('Starting xvp'))
         try:
             utils.execute('xvp',
-                          '-p', FLAGS.console_xvp_pid,
-                          '-c', FLAGS.console_xvp_conf,
-                          '-l', FLAGS.console_xvp_log)
+                          '-p', CONF.console_xvp_pid,
+                          '-c', CONF.console_xvp_conf,
+                          '-l', CONF.console_xvp_log)
         except exception.ProcessExecutionError, err:
             LOG.error(_('Error starting xvp: %s') % err)
 
@@ -151,7 +156,7 @@ class XVPConsoleProxy(object):
 
     def _xvp_pid(self):
         try:
-            with open(FLAGS.console_xvp_pid, 'r') as pidfile:
+            with open(CONF.console_xvp_pid, 'r') as pidfile:
                 pid = int(pidfile.read())
         except IOError:
             return None
@@ -193,4 +198,6 @@ class XVPConsoleProxy(object):
         #xvp will blow up on passwords that are too long (mdragon)
         password = password[:maxlen]
         out, err = utils.execute('xvp', flag, process_input=password)
+        if err:
+            raise exception.ProcessExecutionError(_("Failed to run xvp."))
         return out.strip()

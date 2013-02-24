@@ -68,13 +68,42 @@ VIR_DOMAIN_SHUTDOWN = 4
 VIR_DOMAIN_SHUTOFF = 5
 VIR_DOMAIN_CRASHED = 6
 
+VIR_DOMAIN_XML_SECURE = 1
+
+VIR_DOMAIN_EVENT_ID_LIFECYCLE = 0
+
+VIR_DOMAIN_EVENT_DEFINED = 0
+VIR_DOMAIN_EVENT_UNDEFINED = 1
+VIR_DOMAIN_EVENT_STARTED = 2
+VIR_DOMAIN_EVENT_SUSPENDED = 3
+VIR_DOMAIN_EVENT_RESUMED = 4
+VIR_DOMAIN_EVENT_STOPPED = 5
+VIR_DOMAIN_EVENT_SHUTDOWN = 6
+VIR_DOMAIN_EVENT_PMSUSPENDED = 7
+
+VIR_DOMAIN_UNDEFINE_MANAGED_SAVE = 1
+
+VIR_DOMAIN_AFFECT_CURRENT = 0
+VIR_DOMAIN_AFFECT_LIVE = 1
+VIR_DOMAIN_AFFECT_CONFIG = 2
+
 VIR_CPU_COMPARE_ERROR = -1
 VIR_CPU_COMPARE_INCOMPATIBLE = 0
 VIR_CPU_COMPARE_IDENTICAL = 1
 VIR_CPU_COMPARE_SUPERSET = 2
 
+VIR_CRED_USERNAME = 1
 VIR_CRED_AUTHNAME = 2
+VIR_CRED_LANGUAGE = 3
+VIR_CRED_CNONCE = 4
+VIR_CRED_PASSPHRASE = 5
+VIR_CRED_ECHOPROMPT = 6
 VIR_CRED_NOECHOPROMPT = 7
+VIR_CRED_REALM = 8
+VIR_CRED_EXTERNAL = 9
+
+VIR_MIGRATE_PEER2PEER = 2
+VIR_MIGRATE_UNDEFINE_SOURCE = 16
 
 # libvirtError enums
 # (Intentionally different from what's in libvirt. We do this to check,
@@ -83,9 +112,13 @@ VIR_CRED_NOECHOPROMPT = 7
 VIR_FROM_QEMU = 100
 VIR_FROM_DOMAIN = 200
 VIR_FROM_NWFILTER = 330
+VIR_FROM_REMOTE = 340
+VIR_FROM_RPC = 345
 VIR_ERR_XML_DETAIL = 350
 VIR_ERR_NO_DOMAIN = 420
 VIR_ERR_NO_NWFILTER = 620
+VIR_ERR_SYSTEM_ERROR = 900
+VIR_ERR_INTERNAL_ERROR = 950
 
 
 def _parse_disk_info(element):
@@ -116,7 +149,9 @@ def _parse_disk_info(element):
 
 
 class libvirtError(Exception):
-    def __init__(self, error_code, error_domain, msg):
+    def __init__(self, msg,
+                 error_code=VIR_ERR_INTERNAL_ERROR,
+                 error_domain=VIR_FROM_QEMU):
         self.error_code = error_code
         self.error_domain = error_domain
         Exception(self, msg)
@@ -155,13 +190,14 @@ class Domain(object):
         self._def = self._parse_definition(xml)
         self._has_saved_state = False
         self._snapshots = {}
+        self._id = self._connection._id_counter
 
     def _parse_definition(self, xml):
         try:
             tree = etree.fromstring(xml)
         except etree.ParseError:
-            raise libvirtError(VIR_ERR_XML_DETAIL, VIR_FROM_DOMAIN,
-                               "Invalid XML.")
+            raise libvirtError("Invalid XML.",
+                               VIR_ERR_XML_DETAIL, VIR_FROM_DOMAIN)
 
         definition = {}
 
@@ -265,9 +301,18 @@ class Domain(object):
     def undefine(self):
         self._connection._undefine(self)
 
+    def undefineFlags(self, flags):
+        self.undefine()
+        if flags & VIR_DOMAIN_UNDEFINE_MANAGED_SAVE:
+            if self.hasManagedSaveImage(0):
+                self.managedSaveRemove()
+
     def destroy(self):
         self._state = VIR_DOMAIN_SHUTOFF
         self._connection._mark_not_running(self)
+
+    def ID(self):
+        return self._id
 
     def name(self):
         return self._def['name']
@@ -288,6 +333,11 @@ class Domain(object):
         self._state = VIR_DOMAIN_SHUTDOWN
         self._connection._mark_not_running(self)
 
+    def reset(self, flags):
+        # FIXME: Not handling flags at the moment
+        self._state = VIR_DOMAIN_RUNNING
+        self._connection._mark_running(self)
+
     def info(self):
         return [self._state,
                 long(self._def['memory']),
@@ -295,16 +345,28 @@ class Domain(object):
                 self._def['vcpu'],
                 123456789L]
 
+    def migrateToURI(self, desturi, flags, dname, bandwidth):
+        raise libvirtError("Migration always fails for fake libvirt!")
+
     def attachDevice(self, xml):
         disk_info = _parse_disk_info(etree.fromstring(xml))
         disk_info['_attached'] = True
         self._def['devices']['disks'] += [disk_info]
         return True
 
+    def attachDeviceFlags(self, xml, flags):
+        if (flags & VIR_DOMAIN_AFFECT_LIVE and
+            self._state != VIR_DOMAIN_RUNNING):
+            raise libvirtError("AFFECT_LIVE only allowed for running domains!")
+        self.attachDevice(xml)
+
     def detachDevice(self, xml):
         disk_info = _parse_disk_info(etree.fromstring(xml))
         disk_info['_attached'] = True
         return disk_info in self._def['devices']['disks']
+
+    def detachDeviceFlags(self, xml, _flags):
+        self.detachDevice(xml)
 
     def XMLDesc(self, flags):
         disks = ''
@@ -367,6 +429,7 @@ class Domain(object):
     <input type='tablet' bus='usb'/>
     <input type='mouse' bus='ps2'/>
     <graphics type='vnc' port='-1' autoport='yes'/>
+    <graphics type='spice' port='-1' autoport='yes'/>
     <video>
       <model type='cirrus' vram='9216' heads='1'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02'
@@ -405,6 +468,19 @@ class Domain(object):
         self._snapshots[name] = snapshot
         return snapshot
 
+    def vcpus(self):
+        vcpus = ([], [])
+        for i in range(0, self._def['vcpu']):
+            vcpus[0].append((i, 1, 120405L, i))
+            vcpus[1].append((True, True, True, True))
+        return vcpus
+
+    def memoryStats(self):
+        return {}
+
+    def maxMemory(self):
+        return self._def['memory']
+
 
 class DomainSnapshot(object):
     def __init__(self, name, domain):
@@ -416,8 +492,8 @@ class DomainSnapshot(object):
 
 
 class Connection(object):
-    def __init__(self, uri, readonly):
-        if not uri:
+    def __init__(self, uri, readonly, version=9007):
+        if not uri or uri == '':
             if allow_default_uri_connection:
                 uri = 'qemu:///session'
             else:
@@ -427,12 +503,13 @@ class Connection(object):
         uri_whitelist = ['qemu:///system',
                          'qemu:///session',
                          'xen:///system',
-                         'uml:///system']
+                         'uml:///system',
+                         'test:///default']
 
         if uri not in uri_whitelist:
-            raise libvirtError(5, 0,
-                               "libvir: error : no connection driver "
-                               "available for No connection for URI %s" % uri)
+            raise libvirtError("libvir: error : no connection driver "
+                               "available for No connection for URI %s" % uri,
+                               5, 0)
 
         self.readonly = readonly
         self._uri = uri
@@ -440,6 +517,9 @@ class Connection(object):
         self._running_vms = {}
         self._id_counter = 1  # libvirt reserves 0 for the hypervisor.
         self._nwfilters = {}
+        self._event_callbacks = {}
+        self.fakeLibVersion = version
+        self.fakeVersion = version
 
     def _add_filter(self, nwfilter):
         self._nwfilters[nwfilter._name] = nwfilter
@@ -449,19 +529,25 @@ class Connection(object):
 
     def _mark_running(self, dom):
         self._running_vms[self._id_counter] = dom
+        self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_STARTED, 0)
         self._id_counter += 1
 
     def _mark_not_running(self, dom):
         if dom._transient:
             self._undefine(dom)
 
+        dom._id = -1
+
         for (k, v) in self._running_vms.iteritems():
             if v == dom:
                 del self._running_vms[k]
+                self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_STOPPED, 0)
                 return
 
     def _undefine(self, dom):
         del self._vms[dom.name()]
+        if not dom._transient:
+            self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_UNDEFINED, 0)
 
     def getInfo(self):
         return [node_arch,
@@ -473,39 +559,62 @@ class Connection(object):
                 node_cores,
                 node_threads]
 
+    def numOfDomains(self):
+        return len(self._running_vms)
+
     def listDomainsID(self):
         return self._running_vms.keys()
 
     def lookupByID(self, id):
         if id in self._running_vms:
             return self._running_vms[id]
-        raise libvirtError(VIR_ERR_NO_DOMAIN, VIR_FROM_QEMU,
-                           'Domain not found: no domain with matching '
-                           'id %d' % id)
+        raise libvirtError('Domain not found: no domain with matching '
+                           'id %d' % id,
+                           VIR_ERR_NO_DOMAIN, VIR_FROM_QEMU)
 
     def lookupByName(self, name):
         if name in self._vms:
             return self._vms[name]
-        raise libvirtError(VIR_ERR_NO_DOMAIN, VIR_FROM_QEMU,
-                           'Domain not found: no domain with matching '
-                           'name "%s"' % name)
+        raise libvirtError('Domain not found: no domain with matching '
+                           'name "%s"' % name,
+                           VIR_ERR_NO_DOMAIN, VIR_FROM_QEMU)
+
+    def _emit_lifecycle(self, dom, event, detail):
+        if VIR_DOMAIN_EVENT_ID_LIFECYCLE not in self._event_callbacks:
+            return
+
+        cbinfo = self._event_callbacks[VIR_DOMAIN_EVENT_ID_LIFECYCLE]
+        callback = cbinfo[0]
+        opaque = cbinfo[1]
+        callback(self, dom, event, detail, opaque)
 
     def defineXML(self, xml):
         dom = Domain(connection=self, running=False, transient=False, xml=xml)
         self._vms[dom.name()] = dom
+        self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_DEFINED, 0)
         return dom
 
     def createXML(self, xml, flags):
         dom = Domain(connection=self, running=True, transient=True, xml=xml)
         self._vms[dom.name()] = dom
+        self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_STARTED, 0)
         return dom
 
     def getType(self):
         if self._uri == 'qemu:///system':
             return 'QEMU'
 
+    def getLibVersion(self):
+        return self.fakeLibVersion
+
     def getVersion(self):
-        return 14000
+        return self.fakeVersion
+
+    def getHostname(self):
+        return 'compute1'
+
+    def domainEventRegisterAny(self, dom, eventid, callback, opaque):
+        self._event_callbacks[eventid] = [callback, opaque]
 
     def getCapabilities(self):
         return '''<capabilities>
@@ -762,12 +871,15 @@ class Connection(object):
         try:
             return self._nwfilters[name]
         except KeyError:
-            raise libvirtError(VIR_ERR_NO_NWFILTER, VIR_FROM_NWFILTER,
-                               "no nwfilter with matching name %s" % name)
+            raise libvirtError("no nwfilter with matching name %s" % name,
+                               VIR_ERR_NO_NWFILTER, VIR_FROM_NWFILTER)
 
     def nwfilterDefineXML(self, xml):
         nwfilter = NWFilter(self, xml)
         self._add_filter(nwfilter)
+
+    def listDefinedDomains(self):
+        return []
 
 
 def openReadOnly(uri):
@@ -779,10 +891,29 @@ def openAuth(uri, auth, flags):
         raise Exception(_("Please extend mock libvirt module to support "
                           "flags"))
 
-    if auth != [[VIR_CRED_AUTHNAME, VIR_CRED_NOECHOPROMPT],
-                 'root',
-                 None]:
-        raise Exception(_("Please extend fake libvirt module to support "
-                          "this auth method"))
+    if type(auth) != list:
+        raise Exception(_("Expected a list for 'auth' parameter"))
+
+    if type(auth[0]) != list:
+        raise Exception(
+            _("Expected a function in 'auth[0]' parameter"))
+
+    if not callable(auth[1]):
+        raise Exception(
+            _("Expected a function in 'auth[1]' parameter"))
 
     return Connection(uri, readonly=False)
+
+
+def virEventRunDefaultImpl():
+    time.sleep(1)
+
+
+def virEventRegisterDefaultImpl():
+    pass
+
+
+virDomain = Domain
+
+
+virConnect = Connection

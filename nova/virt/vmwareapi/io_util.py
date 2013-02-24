@@ -1,5 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
+# Copyright (c) 2012 VMware, Inc.
 # Copyright (c) 2011 Citrix Systems, Inc.
 # Copyright 2011 OpenStack LLC.
 #
@@ -25,7 +26,7 @@ from eventlet import greenthread
 from eventlet import queue
 
 from nova import exception
-from nova import log as logging
+from nova.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
@@ -57,6 +58,14 @@ class ThreadSafePipe(queue.LightQueue):
         """Put a data item in the pipe."""
         self.put(data)
 
+    def seek(self, offset, whence=0):
+        """Set the file's current position at the offset."""
+        pass
+
+    def tell(self):
+        """Get size of the file to be read."""
+        return self.transfer_size
+
     def close(self):
         """A place-holder to maintain consistency."""
         pass
@@ -66,12 +75,14 @@ class GlanceWriteThread(object):
     """Ensures that image data is written to in the glance client and that
     it is in correct ('active')state."""
 
-    def __init__(self, input, glance_client, image_id, image_meta=None):
+    def __init__(self, context, input, image_service, image_id,
+            image_meta=None):
         if not image_meta:
             image_meta = {}
 
+        self.context = context
         self.input = input
-        self.glance_client = glance_client
+        self.image_service = image_service
         self.image_id = image_id
         self.image_meta = image_meta
         self._running = False
@@ -82,14 +93,16 @@ class GlanceWriteThread(object):
         def _inner():
             """Function to do the image data transfer through an update
             and thereon checks if the state is 'active'."""
-            self.glance_client.update_image(self.image_id,
-                                            image_meta=self.image_meta,
-                                            image_data=self.input)
+            self.image_service.update(self.context,
+                                      self.image_id,
+                                      self.image_meta,
+                                      data=self.input)
             self._running = True
             while self._running:
                 try:
-                    _get_image_meta = self.glance_client.get_image_meta
-                    image_status = _get_image_meta(self.image_id).get("status")
+                    image_meta = self.image_service.show(self.context,
+                                                         self.image_id)
+                    image_status = image_meta.get("status")
                     if image_status == "active":
                         self.stop()
                         self.done.send(True)

@@ -20,15 +20,14 @@ import distutils.version as dist_version
 import os
 
 from nova.db import migration
-from nova.db.sqlalchemy.session import get_engine
 from nova import exception
-from nova import flags
-from nova import log as logging
+from nova.openstack.common.db.sqlalchemy import session as db_session
+from nova.openstack.common import log as logging
 
 
-import sqlalchemy
 import migrate
 from migrate.versioning import util as migrate_util
+import sqlalchemy
 
 
 LOG = logging.getLogger(__name__)
@@ -61,9 +60,9 @@ from migrate import exceptions as versioning_exceptions
 from migrate.versioning import api as versioning_api
 from migrate.versioning.repository import Repository
 
-FLAGS = flags.FLAGS
-
 _REPOSITORY = None
+
+get_engine = db_session.get_engine
 
 
 def db_sync(version=None):
@@ -97,7 +96,8 @@ def db_version():
         else:
             # Some pre-Essex DB's may not be version controlled.
             # Require them to upgrade using Essex first.
-            raise exception.Error(_("Upgrade DB using Essex release first."))
+            raise exception.NovaException(
+                _("Upgrade DB using Essex release first."))
 
 
 def db_version_control(version=None):

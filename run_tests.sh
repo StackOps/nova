@@ -6,18 +6,24 @@ function usage {
   echo "Usage: $0 [OPTION]..."
   echo "Run Nova's test suite(s)"
   echo ""
-  echo "  -V, --virtual-env        Always use virtualenv.  Install automatically if not present"
-  echo "  -N, --no-virtual-env     Don't use virtualenv.  Run tests in local environment"
-  echo "  -s, --no-site-packages   Isolate the virtualenv from the global Python environment"
-  echo "  -r, --recreate-db        Recreate the test database (deprecated, as this is now the default)."
-  echo "  -n, --no-recreate-db     Don't recreate the test database."
-  echo "  -x, --stop               Stop running tests after the first error or failure."
-  echo "  -f, --force              Force a clean re-build of the virtual environment. Useful when dependencies have been added."
-  echo "  -p, --pep8               Just run PEP8 and HACKING compliance check"
-  echo "  -P, --no-pep8            Don't run static code checks"
-  echo "  -c, --coverage           Generate coverage report"
-  echo "  -h, --help               Print this usage message"
-  echo "  --hide-elapsed           Don't print the elapsed time for each test along with slow test list"
+  echo "  -V, --virtual-env           Always use virtualenv.  Install automatically if not present"
+  echo "  -N, --no-virtual-env        Don't use virtualenv.  Run tests in local environment"
+  echo "  -s, --no-site-packages      Isolate the virtualenv from the global Python environment"
+  echo "  -r, --recreate-db           Recreate the test database (deprecated, as this is now the default)."
+  echo "  -n, --no-recreate-db        Don't recreate the test database."
+  echo "  -f, --force                 Force a clean re-build of the virtual environment. Useful when dependencies have been added."
+  echo "  -u, --update                Update the virtual environment with any newer package versions"
+  echo "  -p, --pep8                  Just run PEP8 and HACKING compliance check"
+  echo "  -P, --no-pep8               Don't run static code checks"
+  echo "  -c, --coverage              Generate coverage report"
+  echo "  -h, --help                  Print this usage message"
+  echo "  --hide-elapsed              Don't print the elapsed time for each test along with slow test list"
+  echo "  --virtual-env-path <path>   Location of the virtualenv directory"
+  echo "                               Default: \$(pwd)"
+  echo "  --virtual-env-name <name>   Name of the virtualenv directory"
+  echo "                               Default: .venv"
+  echo "  --tools-path <dir>          Location of the tools directory"
+  echo "                               Default: \$(pwd)"
   echo ""
   echo "Note: with no options specified, the script will try to run the tests in a virtual environment,"
   echo "      If no virtualenv is found, the script will ask if you would like to create one.  If you "
@@ -25,97 +31,129 @@ function usage {
   exit
 }
 
-function process_option {
-  case "$1" in
-    -h|--help) usage;;
-    -V|--virtual-env) always_venv=1; never_venv=0;;
-    -N|--no-virtual-env) always_venv=0; never_venv=1;;
-    -s|--no-site-packages) no_site_packages=1;;
-    -r|--recreate-db) recreate_db=1;;
-    -n|--no-recreate-db) recreate_db=0;;
-    -m|--patch-migrate) patch_migrate=1;;
-    -w|--no-patch-migrate) patch_migrate=0;;
-    -f|--force) force=1;;
-    -p|--pep8) just_pep8=1;;
-    -P|--no-pep8) no_pep8=1;;
-    -c|--coverage) coverage=1;;
-    -*) noseopts="$noseopts $1";;
-    *) noseargs="$noseargs $1"
-  esac
+function process_options {
+  i=1
+  while [ $i -le $# ]; do
+    case "${!i}" in
+      -h|--help) usage;;
+      -V|--virtual-env) always_venv=1; never_venv=0;;
+      -N|--no-virtual-env) always_venv=0; never_venv=1;;
+      -s|--no-site-packages) no_site_packages=1;;
+      -r|--recreate-db) recreate_db=1;;
+      -n|--no-recreate-db) recreate_db=0;;
+      -f|--force) force=1;;
+      -u|--update) update=1;;
+      -p|--pep8) just_pep8=1;;
+      -P|--no-pep8) no_pep8=1;;
+      -c|--coverage) coverage=1;;
+      --virtual-env-path)
+        (( i++ ))
+        venv_path=${!i}
+        ;;
+      --virtual-env-name)
+        (( i++ ))
+        venv_dir=${!i}
+        ;;
+      --tools-path)
+        (( i++ ))
+        tools_path=${!i}
+        ;;
+      -*) testropts="$testropts ${!i}";;
+      *) testrargs="$testrargs ${!i}"
+    esac
+    (( i++ ))
+  done
 }
 
-venv=.venv
+tool_path=${tools_path:-$(pwd)}
+venv_path=${venv_path:-$(pwd)}
+venv_dir=${venv_name:-.venv}
 with_venv=tools/with_venv.sh
 always_venv=0
 never_venv=0
 force=0
 no_site_packages=0
 installvenvopts=
-noseargs=
-noseopts=
+testrargs=
+testropts=
 wrapper=""
 just_pep8=0
 no_pep8=0
 coverage=0
 recreate_db=1
-patch_migrate=1
+update=0
 
-for arg in "$@"; do
-  process_option $arg
-done
+LANG=en_US.UTF-8
+LANGUAGE=en_US:en
+LC_ALL=C
 
-# If enabled, tell nose to collect coverage data
-if [ $coverage -eq 1 ]; then
-    noseopts="$noseopts --with-coverage --cover-package=nova"
-fi
+process_options $@
+# Make our paths available to other scripts we call
+export venv_path
+export venv_dir
+export venv_name
+export tools_dir
+export venv=${venv_path}/${venv_dir}
 
 if [ $no_site_packages -eq 1 ]; then
   installvenvopts="--no-site-packages"
 fi
 
+function init_testr {
+  if [ ! -d .testrepository ]; then
+    ${wrapper} testr init
+  fi
+}
+
 function run_tests {
   # Cleanup *pyc
   ${wrapper} find . -type f -name "*.pyc" -delete
-  # Just run the test suites in current environment
-  ${wrapper} $NOSETESTS 2> run_tests.log
-  # If we get some short import error right away, print the error log directly
-  RESULT=$?
-  if [ "$RESULT" -ne "0" ];
-  then
-    ERRSIZE=`wc -l run_tests.log | awk '{print \$1}'`
-    if [ "$ERRSIZE" -lt "40" ];
-    then
-        cat run_tests.log
+
+  if [ $coverage -eq 1 ]; then
+    # Do not test test_coverage_ext when gathering coverage.
+    if [ "x$testrargs" = "x" ]; then
+      testrargs="^(?!.*test.*coverage).*$"
     fi
+    TESTRTESTS="$TESTRTESTS --coverage"
+  else
+    TESTRTESTS="$TESTRTESTS --slowest"
   fi
+
+  # Just run the test suites in current environment
+  set +e
+  testrargs=`echo "$testrargs" | sed -e's/^\s*\(.*\)\s*$/\1/'`
+  TESTRTESTS="$TESTRTESTS --testr-args='--subunit $testropts $testrargs'"
+  echo "Running \`${wrapper} $TESTRTESTS\`"
+  bash -c "${wrapper} $TESTRTESTS | ${wrapper} subunit2pyunit"
+  RESULT=$?
+  set -e
+
+  copy_subunit_log
+
+  if [ $coverage -eq 1 ]; then
+    echo "Generating coverage report in covhtml/"
+    # Don't compute coverage for common code, which is tested elsewhere
+    ${wrapper} coverage combine
+    ${wrapper} coverage html --include='nova/*' --omit='nova/openstack/common/*' -d covhtml -i
+  fi
+
   return $RESULT
 }
 
-# Files of interest
-# NOTE(lzyeval): Avoid selecting nova-api-paste.ini and nova.conf in nova/bin
-#                when running on devstack.
-# NOTE(lzyeval): Avoid selecting *.pyc files to reduce pep8 check-up time
-#                when running on devstack.
-# NOTE(dprince): Exclude xenapi plugins. They are Python 2.4 code and as such
-#                cannot be expected to work with tools/hacking checks.
-xen_net_path="plugins/xenserver/networking/etc/xensource/scripts"
-srcfiles=`find nova -type f -name "*.py"`
-srcfiles+=" `find bin -type f ! -name "nova.conf*" ! -name "*api-paste.ini*"`"
-srcfiles+=" `find tools -type f -name "*.py"`"
-srcfiles+=" setup.py"
+function copy_subunit_log {
+  LOGNAME=`cat .testrepository/next-stream`
+  LOGNAME=$(($LOGNAME - 1))
+  LOGNAME=".testrepository/${LOGNAME}"
+  cp $LOGNAME subunit.log
+}
 
 function run_pep8 {
   echo "Running PEP8 and HACKING compliance check..."
-  # Just run PEP8 in current environment
-  #
-
-  # Until all these issues get fixed, ignore.
-  ignore='--ignore=N4,N306'
-  ${wrapper} python tools/hacking.py ${ignore} ${srcfiles}
+  bash -c "${wrapper} tools/run_pep8.sh"
 }
 
 
-NOSETESTS="python nova/testing/runner.py $noseopts $noseargs"
+TESTRTESTS="python setup.py testr"
 
 if [ $never_venv -eq 0 ]
 then
@@ -123,6 +161,10 @@ then
   if [ $force -eq 1 ]; then
     echo "Cleaning virtualenv..."
     rm -rf ${venv}
+  fi
+  if [ $update -eq 1 ]; then
+      echo "Updating virtualenv..."
+      python tools/install_venv.py $installvenvopts
   fi
   if [ -e ${venv} ]; then
     wrapper="${with_venv}"
@@ -157,20 +199,15 @@ if [ $recreate_db -eq 1 ]; then
     rm -f tests.sqlite
 fi
 
+init_testr
 run_tests
 
 # NOTE(sirp): we only want to run pep8 when we're running the full-test suite,
 # not when we're running tests individually. To handle this, we need to
-# distinguish between options (noseopts), which begin with a '-', and
-# arguments (noseargs).
-if [ -z "$noseargs" ]; then
+# distinguish between options (testropts), which begin with a '-', and
+# arguments (testrargs).
+if [ -z "$testrargs" ]; then
   if [ $no_pep8 -eq 0 ]; then
     run_pep8
   fi
-fi
-
-if [ $coverage -eq 1 ]; then
-    echo "Generating coverage report in covhtml/"
-    # Don't compute coverage for common code, which is tested elsewhere
-    ${wrapper} coverage html --include='nova/*' --omit='nova/openstack/common/*' -d covhtml -i
 fi

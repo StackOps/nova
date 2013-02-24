@@ -16,7 +16,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Stubouts, mocks and fixtures for the test suite"""
+"""Stubouts, mocks and fixtures for the test suite."""
 
 from nova import db
 from nova import exception
@@ -68,7 +68,6 @@ def stub_out_db_network_api(stubs):
 
     fixed_ip_fields = {'id': 0,
                        'network_id': 0,
-                       'network': FakeModel(network_fields),
                        'address': '192.168.0.100',
                        'instance': False,
                        'instance_id': 0,
@@ -208,15 +207,6 @@ def stub_out_db_network_api(stubs):
         if ips:
             return FakeModel(ips[0])
 
-    def fake_fixed_ip_get_network(context, address):
-        ips = filter(lambda i: i['address'] == address,
-                     fixed_ips)
-        if ips:
-            nets = filter(lambda n: n['id'] == ips[0]['network_id'],
-                          networks)
-            if nets:
-                return FakeModel(nets[0])
-
     def fake_fixed_ip_update(context, address, values):
         ips = filter(lambda i: i['address'] == address,
                      fixed_ips)
@@ -304,9 +294,6 @@ def stub_out_db_network_api(stubs):
         return [FakeModel(n) for n in networks
                 if n['project_id'] == project_id]
 
-    def fake_queue_get_for(context, topic, node):
-        return "%s.%s" % (topic, node)
-
     funcs = [fake_floating_ip_allocate_address,
              fake_floating_ip_deallocate,
              fake_floating_ip_disassociate,
@@ -321,7 +308,6 @@ def stub_out_db_network_api(stubs):
              fake_fixed_ip_disassociate_all_by_timeout,
              fake_fixed_ip_get_by_instance,
              fake_fixed_ip_get_by_address,
-             fake_fixed_ip_get_network,
              fake_fixed_ip_update,
              fake_instance_type_get,
              fake_virtual_interface_create,
@@ -335,8 +321,7 @@ def stub_out_db_network_api(stubs):
              fake_network_get_all_by_instance,
              fake_network_set_host,
              fake_network_update,
-             fake_project_get_networks,
-             fake_queue_get_for]
+             fake_project_get_networks]
 
     stub_out(stubs, funcs)
 
@@ -436,13 +421,6 @@ def stub_out_db_instance_api(stubs, injected=True):
                 return inst_type
         return None
 
-    def fake_network_get_by_instance(context, instance_id):
-        # Even instance numbers are on vlan networks
-        if instance_id % 2 == 0:
-            return FakeModel(vlan_network_fields)
-        else:
-            return FakeModel(flat_network_fields)
-
     def fake_network_get_all_by_instance(context, instance_id):
         # Even instance numbers are on vlan networks
         if instance_id % 2 == 0:
@@ -453,8 +431,7 @@ def stub_out_db_instance_api(stubs, injected=True):
     def fake_fixed_ip_get_by_instance(context, instance_id):
         return [FakeModel(fixed_ip_fields)]
 
-    funcs = [fake_network_get_by_instance,
-             fake_network_get_all_by_instance,
+    funcs = [fake_network_get_all_by_instance,
              fake_instance_type_get_all,
              fake_instance_type_get_by_name,
              fake_instance_type_get,

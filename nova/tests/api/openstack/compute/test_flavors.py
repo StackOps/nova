@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2010 OpenStack LLC.
+# Copyright 2012 OpenStack LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,15 +23,12 @@ import urlparse
 from nova.api.openstack.compute import flavors
 from nova.api.openstack import xmlutil
 import nova.compute.instance_types
+from nova import context
+from nova import db
 from nova import exception
-from nova import flags
 from nova import test
-from nova import utils
 from nova.tests.api.openstack import fakes
-
-
-FLAGS = flags.FLAGS
-
+from nova.tests import matchers
 
 NS = "{http://docs.openstack.org/compute/api/v1.1}"
 ATOMNS = "{http://www.w3.org/2005/Atom}"
@@ -42,13 +39,13 @@ FAKE_FLAVORS = {
         "flavorid": '1',
         "name": 'flavor 1',
         "memory_mb": '256',
-        "root_gb": '10'
+        "root_gb": '10',
     },
     'flavor 2': {
         "flavorid": '2',
         "name": 'flavor 2',
         "memory_mb": '512',
-        "root_gb": '20'
+        "root_gb": '20',
     },
 }
 
@@ -80,12 +77,13 @@ def empty_instance_type_get_all(inactive=False, filters=None):
 
 
 def return_instance_type_not_found(flavor_id):
-    raise exception.InstanceTypeNotFound(flavor_id=flavor_id)
+    raise exception.InstanceTypeNotFound(instance_type_id=flavor_id)
 
 
 class FlavorsTest(test.TestCase):
     def setUp(self):
         super(FlavorsTest, self).setUp()
+        self.flags(osapi_compute_extension=[])
         fakes.stub_out_networking(self.stubs)
         fakes.stub_out_rate_limiting(self.stubs)
         self.stubs.Set(nova.compute.instance_types, "get_all_types",
@@ -113,8 +111,6 @@ class FlavorsTest(test.TestCase):
                 "name": "flavor 1",
                 "ram": "256",
                 "disk": "10",
-                "rxtx_factor": "",
-                "swap": "",
                 "vcpus": "",
                 "links": [
                     {
@@ -141,8 +137,6 @@ class FlavorsTest(test.TestCase):
                 "name": "flavor 1",
                 "ram": "256",
                 "disk": "10",
-                "rxtx_factor": "",
-                "swap": "",
                 "vcpus": "",
                 "links": [
                     {
@@ -221,7 +215,7 @@ class FlavorsTest(test.TestCase):
                'rel': 'next'}
             ]
         }
-        self.assertDictMatch(flavor, expected)
+        self.assertThat(flavor, matchers.DictMatches(expected))
 
     def test_get_flavor_detail_with_limit(self):
         req = fakes.HTTPRequest.blank('/v2/fake/flavors/detail?limit=1')
@@ -253,7 +247,8 @@ class FlavorsTest(test.TestCase):
         href_parts = urlparse.urlparse(response_links[0]['href'])
         self.assertEqual('/v2/fake/flavors', href_parts.path)
         params = urlparse.parse_qs(href_parts.query)
-        self.assertDictMatch({'limit': ['1'], 'marker': ['1']}, params)
+        self.assertThat({'limit': ['1'], 'marker': ['1']},
+                        matchers.DictMatches(params))
 
     def test_get_flavor_with_limit(self):
         req = fakes.HTTPRequest.blank('/v2/fake/flavors?limit=2')
@@ -299,7 +294,8 @@ class FlavorsTest(test.TestCase):
         href_parts = urlparse.urlparse(response_links[0]['href'])
         self.assertEqual('/v2/fake/flavors', href_parts.path)
         params = urlparse.parse_qs(href_parts.query)
-        self.assertDictMatch({'limit': ['2'], 'marker': ['2']}, params)
+        self.assertThat({'limit': ['2'], 'marker': ['2']},
+                        matchers.DictMatches(params))
 
     def test_get_flavor_list_detail(self):
         req = fakes.HTTPRequest.blank('/v2/fake/flavors/detail')
@@ -311,8 +307,6 @@ class FlavorsTest(test.TestCase):
                     "name": "flavor 1",
                     "ram": "256",
                     "disk": "10",
-                    "rxtx_factor": "",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -330,8 +324,6 @@ class FlavorsTest(test.TestCase):
                     "name": "flavor 2",
                     "ram": "512",
                     "disk": "20",
-                    "rxtx_factor": "",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -358,7 +350,7 @@ class FlavorsTest(test.TestCase):
         self.assertEqual(flavors, expected)
 
     def test_get_flavor_list_filter_min_ram(self):
-        """Flavor lists may be filtered by minRam."""
+        # Flavor lists may be filtered by minRam.
         req = fakes.HTTPRequest.blank('/v2/fake/flavors?minRam=512')
         flavor = self.controller.index(req)
         expected = {
@@ -382,13 +374,13 @@ class FlavorsTest(test.TestCase):
         self.assertEqual(flavor, expected)
 
     def test_get_flavor_list_filter_invalid_min_ram(self):
-        """Ensure you cannot list flavors with invalid minRam param."""
+        # Ensure you cannot list flavors with invalid minRam param.
         req = fakes.HTTPRequest.blank('/v2/fake/flavors?minRam=NaN')
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.index, req)
 
     def test_get_flavor_list_filter_min_disk(self):
-        """Flavor lists may be filtered by minDisk."""
+        # Flavor lists may be filtered by minDisk.
         req = fakes.HTTPRequest.blank('/v2/fake/flavors?minDisk=20')
         flavor = self.controller.index(req)
         expected = {
@@ -412,7 +404,7 @@ class FlavorsTest(test.TestCase):
         self.assertEqual(flavor, expected)
 
     def test_get_flavor_list_filter_invalid_min_disk(self):
-        """Ensure you cannot list flavors with invalid minDisk param."""
+        # Ensure you cannot list flavors with invalid minDisk param.
         req = fakes.HTTPRequest.blank('/v2/fake/flavors?minDisk=NaN')
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.index, req)
@@ -431,8 +423,6 @@ class FlavorsTest(test.TestCase):
                     "name": "flavor 2",
                     "ram": "512",
                     "disk": "20",
-                    "rxtx_factor": "",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -461,8 +451,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                 "name": "asdf",
                 "ram": "256",
                 "disk": "10",
-                "rxtx_factor": "1",
-                "swap": "",
                 "vcpus": "",
                 "links": [
                     {
@@ -478,7 +466,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         has_dec = output.startswith("<?xml version='1.0' encoding='UTF-8'?>")
         self.assertTrue(has_dec)
 
@@ -491,8 +478,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                 "name": "asdf",
                 "ram": "256",
                 "disk": "10",
-                "rxtx_factor": "1",
-                "swap": "",
                 "vcpus": "",
                 "links": [
                     {
@@ -508,7 +493,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         root = etree.XML(output)
         xmlutil.validate_schema(root, 'flavor')
         flavor_dict = fixture['flavor']
@@ -531,8 +515,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                 "name": "asdf",
                 "ram": 256,
                 "disk": 10,
-                "rxtx_factor": "1",
-                "swap": "",
                 "vcpus": "",
                 "links": [
                     {
@@ -548,7 +530,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         root = etree.XML(output)
         xmlutil.validate_schema(root, 'flavor')
         flavor_dict = fixture['flavor']
@@ -572,8 +553,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                     "name": "flavor 23",
                     "ram": "512",
                     "disk": "20",
-                    "rxtx_factor": "1",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -591,8 +570,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                     "name": "flavor 13",
                     "ram": "256",
                     "disk": "10",
-                    "rxtx_factor": "1",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -609,7 +586,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         root = etree.XML(output)
         xmlutil.validate_schema(root, 'flavors')
         flavor_elems = root.findall('{0}flavor'.format(NS))
@@ -636,8 +612,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                     "name": "flavor 23",
                     "ram": "512",
                     "disk": "20",
-                    "rxtx_factor": "1",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -655,8 +629,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
                     "name": "flavor 13",
                     "ram": "256",
                     "disk": "10",
-                    "rxtx_factor": "1",
-                    "swap": "",
                     "vcpus": "",
                     "links": [
                         {
@@ -673,7 +645,6 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         root = etree.XML(output)
         xmlutil.validate_schema(root, 'flavors_index')
         flavor_elems = root.findall('{0}flavor'.format(NS))
@@ -698,8 +669,96 @@ class FlavorsXMLSerializationTest(test.TestCase):
         }
 
         output = serializer.serialize(fixture)
-        print output
         root = etree.XML(output)
         xmlutil.validate_schema(root, 'flavors_index')
         flavor_elems = root.findall('{0}flavor'.format(NS))
         self.assertEqual(len(flavor_elems), 0)
+
+
+class DisabledFlavorsWithRealDBTest(test.TestCase):
+    """
+    Tests that disabled flavors should not be shown nor listed.
+    """
+    def setUp(self):
+        super(DisabledFlavorsWithRealDBTest, self).setUp()
+        self.controller = flavors.Controller()
+
+        # Add a new disabled type to the list of instance_types/flavors
+        self.req = fakes.HTTPRequest.blank('/v2/fake/flavors')
+        self.context = self.req.environ['nova.context']
+        self.admin_context = context.get_admin_context()
+
+        self.disabled_type = self._create_disabled_instance_type()
+        self.inst_types = db.api.instance_type_get_all(
+                self.admin_context)
+
+    def tearDown(self):
+        db.api.instance_type_destroy(
+                self.admin_context, self.disabled_type['name'])
+
+        super(DisabledFlavorsWithRealDBTest, self).tearDown()
+
+    def _create_disabled_instance_type(self):
+        inst_types = db.api.instance_type_get_all(
+                self.admin_context)
+
+        inst_type = inst_types[0]
+
+        del inst_type['id']
+        inst_type['name'] += '.disabled'
+        inst_type['flavorid'] = unicode(max(
+                [int(flavor['flavorid']) for flavor in inst_types]) + 1)
+        inst_type['disabled'] = True
+
+        disabled_type = db.api.instance_type_create(
+                self.admin_context, inst_type)
+
+        return disabled_type
+
+    def test_index_should_not_list_disabled_flavors_to_user(self):
+        self.context.is_admin = False
+
+        flavor_list = self.controller.index(self.req)['flavors']
+        api_flavorids = set(f['id'] for f in flavor_list)
+
+        db_flavorids = set(i['flavorid'] for i in self.inst_types)
+        disabled_flavorid = str(self.disabled_type['flavorid'])
+
+        self.assert_(disabled_flavorid in db_flavorids)
+        self.assertEqual(db_flavorids - set([disabled_flavorid]),
+                         api_flavorids)
+
+    def test_index_should_list_disabled_flavors_to_admin(self):
+        self.context.is_admin = True
+
+        flavor_list = self.controller.index(self.req)['flavors']
+        api_flavorids = set(f['id'] for f in flavor_list)
+
+        db_flavorids = set(i['flavorid'] for i in self.inst_types)
+        disabled_flavorid = str(self.disabled_type['flavorid'])
+
+        self.assert_(disabled_flavorid in db_flavorids)
+        self.assertEqual(db_flavorids, api_flavorids)
+
+    def test_show_should_include_disabled_flavor_for_user(self):
+        """
+        Counterintuitively we should show disabled flavors to all users and not
+        just admins. The reason is that, when a user performs a server-show
+        request, we want to be able to display the pretty flavor name ('512 MB
+        Instance') and not just the flavor-id even if the flavor id has been
+        marked disabled.
+        """
+        self.context.is_admin = False
+
+        flavor = self.controller.show(
+                self.req, self.disabled_type['flavorid'])['flavor']
+
+        self.assertEqual(flavor['name'], self.disabled_type['name'])
+
+    def test_show_should_include_disabled_flavor_for_admin(self):
+        self.context.is_admin = True
+
+        flavor = self.controller.show(
+                self.req, self.disabled_type['flavorid'])['flavor']
+
+        self.assertEqual(flavor['name'], self.disabled_type['name'])

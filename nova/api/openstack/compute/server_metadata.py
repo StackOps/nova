@@ -24,7 +24,7 @@ from nova import exception
 
 
 class Controller(object):
-    """ The server metadata API controller for the OpenStack API """
+    """The server metadata API controller for the OpenStack API."""
 
     def __init__(self):
         self.compute_api = compute.API()
@@ -45,7 +45,7 @@ class Controller(object):
 
     @wsgi.serializers(xml=common.MetadataTemplate)
     def index(self, req, server_id):
-        """ Returns the list of metadata for a given instance """
+        """Returns the list of metadata for a given instance."""
         context = req.environ['nova.context']
         return {'metadata': self._get_metadata(context, server_id)}
 
@@ -129,13 +129,20 @@ class Controller(object):
         except exception.InvalidMetadata as error:
             raise exc.HTTPBadRequest(explanation=unicode(error))
 
+        except exception.InvalidMetadataSize as error:
+            raise exc.HTTPRequestEntityTooLarge(explanation=unicode(error))
+
         except exception.QuotaError as error:
             raise exc.HTTPRequestEntityTooLarge(explanation=unicode(error),
                                                 headers={'Retry-After': 0})
 
+        except exception.InstanceInvalidState as state_error:
+            common.raise_http_conflict_for_instance_invalid_state(state_error,
+                    'update metadata')
+
     @wsgi.serializers(xml=common.MetaItemTemplate)
     def show(self, req, server_id, id):
-        """ Return a single metadata item """
+        """Return a single metadata item."""
         context = req.environ['nova.context']
         data = self._get_metadata(context, server_id)
 
@@ -147,7 +154,7 @@ class Controller(object):
 
     @wsgi.response(204)
     def delete(self, req, server_id, id):
-        """ Deletes an existing metadata """
+        """Deletes an existing metadata."""
         context = req.environ['nova.context']
 
         metadata = self._get_metadata(context, server_id)
@@ -159,9 +166,14 @@ class Controller(object):
         try:
             server = self.compute_api.get(context, server_id)
             self.compute_api.delete_instance_metadata(context, server, id)
+
         except exception.InstanceNotFound:
             msg = _('Server does not exist')
             raise exc.HTTPNotFound(explanation=msg)
+
+        except exception.InstanceInvalidState as state_error:
+            common.raise_http_conflict_for_instance_invalid_state(state_error,
+                    'delete metadata')
 
 
 def create_resource():

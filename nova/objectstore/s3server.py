@@ -41,28 +41,37 @@ import os
 import os.path
 import urllib
 
+from oslo.config import cfg
 import routes
 import webob
 
-from nova import flags
-from nova import log as logging
-from nova.openstack.common import cfg
+from nova.openstack.common import fileutils
+from nova import paths
 from nova import utils
 from nova import wsgi
 
 
-buckets_path_opt = cfg.StrOpt('buckets_path', default='$state_path/buckets',
-                              help='path to s3 buckets')
+s3_opts = [
+    cfg.StrOpt('buckets_path',
+               default=paths.state_path_def('buckets'),
+               help='path to s3 buckets'),
+    cfg.StrOpt('s3_listen',
+               default="0.0.0.0",
+               help='IP address for S3 API to listen'),
+    cfg.IntOpt('s3_listen_port',
+               default=3333,
+               help='port for s3 api to listen'),
+]
 
-FLAGS = flags.FLAGS
-FLAGS.register_opt(buckets_path_opt)
+CONF = cfg.CONF
+CONF.register_opts(s3_opts)
 
 
 def get_wsgi_server():
     return wsgi.Server("S3 Objectstore",
-                       S3Application(FLAGS.buckets_path),
-                       port=FLAGS.s3_port,
-                       host=FLAGS.s3_host)
+                       S3Application(CONF.buckets_path),
+                       port=CONF.s3_listen_port,
+                       host=CONF.s3_listen)
 
 
 class S3Application(wsgi.Router):
@@ -85,8 +94,7 @@ class S3Application(wsgi.Router):
         mapper.connect('/{bucket_name}/',
                 controller=lambda *a, **kw: BucketHandler(self)(*a, **kw))
         self.directory = os.path.abspath(root_directory)
-        if not os.path.exists(self.directory):
-            os.makedirs(self.directory)
+        fileutils.ensure_tree(self.directory)
         self.bucket_depth = bucket_depth
         super(S3Application, self).__init__(mapper)
 
@@ -278,7 +286,7 @@ class BucketHandler(BaseRequestHandler):
             os.path.exists(path)):
             self.set_status(403)
             return
-        os.makedirs(path)
+        fileutils.ensure_tree(path)
         self.finish()
 
     def delete(self, bucket_name):
@@ -327,8 +335,7 @@ class ObjectHandler(BaseRequestHandler):
             self.set_status(403)
             return
         directory = os.path.dirname(path)
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+        fileutils.ensure_tree(directory)
         object_file = open(path, "w")
         object_file.write(self.request.body)
         object_file.close()

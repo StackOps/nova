@@ -22,7 +22,7 @@ from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova import compute
 from nova import exception
-from nova import log as logging
+from nova.openstack.common import log as logging
 
 
 LOG = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class MultinicController(wsgi.Controller):
 # Note: The class name is as it has to be for this to be loaded as an
 # extension--only first character capitalized.
 class Multinic(extensions.ExtensionDescriptor):
-    """Multiple network support"""
+    """Multiple network support."""
 
     name = "Multinic"
     alias = "NMN"

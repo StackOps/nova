@@ -14,6 +14,7 @@
 
 """The rescue mode extension."""
 
+from oslo.config import cfg
 import webob
 from webob import exc
 
@@ -22,12 +23,11 @@ from nova.api.openstack import extensions as exts
 from nova.api.openstack import wsgi
 from nova import compute
 from nova import exception
-from nova import flags
-from nova import log as logging
+from nova.openstack.common import log as logging
 from nova import utils
 
 
-FLAGS = flags.FLAGS
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 authorize = exts.extension_authorizer('compute', 'rescue')
 
@@ -54,7 +54,7 @@ class RescueController(wsgi.Controller):
         if body['rescue'] and 'adminPass' in body['rescue']:
             password = body['rescue']['adminPass']
         else:
-            password = utils.generate_password(FLAGS.password_length)
+            password = utils.generate_password()
 
         instance = self._get_instance(context, id)
         try:
@@ -81,7 +81,7 @@ class RescueController(wsgi.Controller):
 
 
 class Rescue(exts.ExtensionDescriptor):
-    """Instance rescue mode"""
+    """Instance rescue mode."""
 
     name = "Rescue"
     alias = "os-rescue"

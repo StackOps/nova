@@ -25,50 +25,84 @@ import errno
 import functools
 import hashlib
 import inspect
-import itertools
-import json
 import os
 import pyclbr
 import random
 import re
-import shlex
 import shutil
+import signal
 import socket
 import struct
 import sys
 import tempfile
-import threading
 import time
-import types
-import uuid
-import warnings
+from xml.dom import minidom
+from xml.parsers import expat
+from xml import sax
+from xml.sax import expatreader
 from xml.sax import saxutils
 
-from eventlet import corolocal
 from eventlet import event
-from eventlet import greenthread
-from eventlet import semaphore
 from eventlet.green import subprocess
-import iso8601
-import lockfile
+from eventlet import greenthread
 import netaddr
 
+from oslo.config import cfg
+
 from nova import exception
-from nova import flags
-from nova import log as logging
-from nova.openstack.common import cfg
 from nova.openstack.common import excutils
 from nova.openstack.common import importutils
+from nova.openstack.common import log as logging
+from nova.openstack.common.rpc import common as rpc_common
+from nova.openstack.common import timeutils
 
+notify_decorator = 'nova.openstack.common.notifier.api.notify_decorator'
+
+monkey_patch_opts = [
+    cfg.BoolOpt('monkey_patch',
+                default=False,
+                help='Whether to log monkey patching'),
+    cfg.ListOpt('monkey_patch_modules',
+                default=[
+                  'nova.api.ec2.cloud:%s' % (notify_decorator),
+                  'nova.compute.api:%s' % (notify_decorator)
+                  ],
+                help='List of modules/decorators to monkey patch'),
+]
+utils_opts = [
+    cfg.IntOpt('password_length',
+               default=12,
+               help='Length of generated instance admin passwords'),
+    cfg.BoolOpt('disable_process_locking',
+                default=False,
+                help='Whether to disable inter-process locks'),
+    cfg.StrOpt('instance_usage_audit_period',
+               default='month',
+               help='time period to generate instance usages for.  '
+                    'Time period must be hour, day, month or year'),
+    cfg.StrOpt('rootwrap_config',
+               default="/etc/nova/rootwrap.conf",
+               help='Path to the rootwrap configuration file to use for '
+                    'running commands as root'),
+    cfg.StrOpt('tempdir',
+               default=None,
+               help='Explicitly specify the temporary working directory'),
+]
+CONF = cfg.CONF
+CONF.register_opts(monkey_patch_opts)
+CONF.register_opts(utils_opts)
 
 LOG = logging.getLogger(__name__)
-ISO_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
-PERFECT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
-FLAGS = flags.FLAGS
 
-FLAGS.register_opt(
-    cfg.BoolOpt('disable_process_locking', default=False,
-                help='Whether to disable inter-process locks'))
+# Used for looking up extensions of text
+# to their 'multiplied' byte amount
+BYTE_MULTIPLIERS = {
+    '': 1,
+    't': 1024 ** 4,
+    'g': 1024 ** 3,
+    'm': 1024 ** 2,
+    'k': 1024,
+}
 
 
 def vpn_ping(address, port, timeout=0.05, session_id=None):
@@ -119,16 +153,17 @@ def vpn_ping(address, port, timeout=0.05, session_id=None):
         return server_sess
 
 
-def fetchfile(url, target):
-    LOG.debug(_('Fetching %s') % url)
-    execute('curl', '--fail', url, '-o', target)
+def _subprocess_setup():
+    # Python installs a SIGPIPE handler by default. This is usually not what
+    # non-Python subprocesses expect.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
 def execute(*cmd, **kwargs):
     """Helper method to execute command with optional retry.
 
     If you add a run_as_root=True command, don't forget to add the
-    corresponding filter to nova.rootwrap !
+    corresponding filter to etc/nova/rootwrap.d !
 
     :param cmd:                Passed to subprocess.Popen.
     :param process_input:      Send to opened process.
@@ -141,8 +176,7 @@ def execute(*cmd, **kwargs):
                                before retrying.
     :param attempts:           How many times to retry cmd.
     :param run_as_root:        True | False. Defaults to False. If set to True,
-                               the command is prefixed by the command specified
-                               in the root_helper FLAG.
+                               the command is run with rootwrap.
 
     :raises exception.NovaException: on receiving unknown arguments
     :raises exception.ProcessExecutionError:
@@ -150,7 +184,6 @@ def execute(*cmd, **kwargs):
     :returns: a tuple, (stdout, stderr) from the spawned process, or None if
              the command fails.
     """
-
     process_input = kwargs.pop('process_input', None)
     check_exit_code = kwargs.pop('check_exit_code', [0])
     ignore_exit_code = False
@@ -168,8 +201,9 @@ def execute(*cmd, **kwargs):
         raise exception.NovaException(_('Got unknown keyword args '
                                         'to utils.execute: %r') % kwargs)
 
-    if run_as_root:
-        cmd = shlex.split(FLAGS.root_helper) + list(cmd)
+    if run_as_root and os.geteuid() != 0:
+        cmd = ['sudo', 'nova-rootwrap', CONF.rootwrap_config] + list(cmd)
+
     cmd = map(str, cmd)
 
     while attempts > 0:
@@ -177,11 +211,20 @@ def execute(*cmd, **kwargs):
         try:
             LOG.debug(_('Running cmd (subprocess): %s'), ' '.join(cmd))
             _PIPE = subprocess.PIPE  # pylint: disable=E1101
+
+            if os.name == 'nt':
+                preexec_fn = None
+                close_fds = False
+            else:
+                preexec_fn = _subprocess_setup
+                close_fds = True
+
             obj = subprocess.Popen(cmd,
                                    stdin=_PIPE,
                                    stdout=_PIPE,
                                    stderr=_PIPE,
-                                   close_fds=True,
+                                   close_fds=close_fds,
+                                   preexec_fn=preexec_fn,
                                    shell=shell)
             result = None
             if process_input is not None:
@@ -190,15 +233,14 @@ def execute(*cmd, **kwargs):
                 result = obj.communicate()
             obj.stdin.close()  # pylint: disable=E1101
             _returncode = obj.returncode  # pylint: disable=E1101
-            if _returncode:
-                LOG.debug(_('Result was %s') % _returncode)
-                if not ignore_exit_code and _returncode not in check_exit_code:
-                    (stdout, stderr) = result
-                    raise exception.ProcessExecutionError(
-                            exit_code=_returncode,
-                            stdout=stdout,
-                            stderr=stderr,
-                            cmd=' '.join(cmd))
+            LOG.debug(_('Result was %s') % _returncode)
+            if not ignore_exit_code and _returncode not in check_exit_code:
+                (stdout, stderr) = result
+                raise exception.ProcessExecutionError(
+                        exit_code=_returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                        cmd=' '.join(cmd))
             return result
         except exception.ProcessExecutionError:
             if not attempts:
@@ -233,12 +275,10 @@ def trycmd(*args, **kwargs):
         failed = False
     except exception.ProcessExecutionError, exn:
         out, err = '', str(exn)
-        LOG.debug(err)
         failed = True
 
     if not failed and discard_warnings and err:
         # Handle commands that output to stderr but otherwise succeed
-        LOG.debug(err)
         err = ''
 
     return out, err
@@ -246,7 +286,7 @@ def trycmd(*args, **kwargs):
 
 def ssh_execute(ssh, cmd, process_input=None,
                 addl_env=None, check_exit_code=True):
-    LOG.debug(_('Running cmd (SSH): %s'), ' '.join(cmd))
+    LOG.debug(_('Running cmd (SSH): %s'), cmd)
     if addl_env:
         raise exception.NovaException(_('Environment not supported over SSH'))
 
@@ -276,7 +316,7 @@ def ssh_execute(ssh, cmd, process_input=None,
             raise exception.ProcessExecutionError(exit_code=exit_status,
                                                   stdout=stdout,
                                                   stderr=stderr,
-                                                  cmd=' '.join(cmd))
+                                                  cmd=cmd)
 
     return (stdout, stderr)
 
@@ -284,27 +324,6 @@ def ssh_execute(ssh, cmd, process_input=None,
 def novadir():
     import nova
     return os.path.abspath(nova.__file__).split('nova/__init__.py')[0]
-
-
-def default_flagfile(filename='nova.conf', args=None):
-    if args is None:
-        args = sys.argv
-    for arg in args:
-        if arg.find('flagfile') != -1:
-            return arg[arg.index('flagfile') + len('flagfile') + 1:]
-    else:
-        if not os.path.isabs(filename):
-            # turn relative filename into an absolute path
-            script_dir = os.path.dirname(inspect.stack()[-1][1])
-            filename = os.path.abspath(os.path.join(script_dir, filename))
-        if not os.path.exists(filename):
-            filename = "./nova.conf"
-            if not os.path.exists(filename):
-                filename = '/etc/nova/nova.conf'
-        if os.path.exists(filename):
-            flagfile = '--flagfile=%s' % filename
-            args.insert(1, flagfile)
-            return filename
 
 
 def debug(arg):
@@ -330,7 +349,7 @@ EASIER_PASSWORD_SYMBOLS = ('23456789',  # Removed: 0, 1
                            'ABCDEFGHJKLMNPQRSTUVWXYZ')  # Removed: I, O
 
 
-def last_completed_audit_period(unit=None):
+def last_completed_audit_period(unit=None, before=None):
     """This method gives you the most recently *completed* audit period.
 
     arguments:
@@ -342,20 +361,25 @@ def last_completed_audit_period(unit=None):
                     like so:  'day@18'  This will begin the period at 18:00
                     UTC.  'month@15' starts a monthly period on the 15th,
                     and year@3 begins a yearly one on March 1st.
+            before: Give the audit period most recently completed before
+                    <timestamp>. Defaults to now.
 
 
     returns:  2 tuple of datetimes (begin, end)
               The begin timestamp of this audit period is the same as the
               end of the previous."""
     if not unit:
-        unit = FLAGS.instance_usage_audit_period
+        unit = CONF.instance_usage_audit_period
 
     offset = 0
     if '@' in unit:
         unit, offset = unit.split("@", 1)
         offset = int(offset)
 
-    rightnow = utcnow()
+    if before is not None:
+        rightnow = before
+    else:
+        rightnow = timeutils.utcnow()
     if unit not in ('month', 'day', 'year', 'hour'):
         raise ValueError('Time period must be hour, day, month or year')
     if unit == 'month':
@@ -416,7 +440,7 @@ def last_completed_audit_period(unit=None):
     return (begin, end)
 
 
-def generate_password(length=20, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
+def generate_password(length=None, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
     """Generate a random password from the supplied symbol groups.
 
     At least one symbol from each group will be included. Unpredictable
@@ -425,6 +449,9 @@ def generate_password(length=20, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
     Believed to be reasonably secure (with a reasonable password length!)
 
     """
+    if length is None:
+        length = CONF.password_length
+
     r = random.SystemRandom()
 
     # NOTE(jerdfelt): Some password policies require at least one character
@@ -470,83 +497,6 @@ def get_my_linklocal(interface):
         raise exception.NovaException(msg)
 
 
-def utcnow():
-    """Overridable version of utils.utcnow."""
-    if utcnow.override_time:
-        return utcnow.override_time
-    return datetime.datetime.utcnow()
-
-
-utcnow.override_time = None
-
-
-def is_older_than(before, seconds):
-    """Return True if before is older than seconds."""
-    return utcnow() - before > datetime.timedelta(seconds=seconds)
-
-
-def utcnow_ts():
-    """Timestamp version of our utcnow function."""
-    return time.mktime(utcnow().timetuple())
-
-
-def set_time_override(override_time=datetime.datetime.utcnow()):
-    """Override utils.utcnow to return a constant time."""
-    utcnow.override_time = override_time
-
-
-def advance_time_delta(timedelta):
-    """Advance overriden time using a datetime.timedelta."""
-    assert(not utcnow.override_time is None)
-    utcnow.override_time += timedelta
-
-
-def advance_time_seconds(seconds):
-    """Advance overriden time by seconds."""
-    advance_time_delta(datetime.timedelta(0, seconds))
-
-
-def clear_time_override():
-    """Remove the overridden time."""
-    utcnow.override_time = None
-
-
-def strtime(at=None, fmt=PERFECT_TIME_FORMAT):
-    """Returns formatted utcnow."""
-    if not at:
-        at = utcnow()
-    return at.strftime(fmt)
-
-
-def parse_strtime(timestr, fmt=PERFECT_TIME_FORMAT):
-    """Turn a formatted time back into a datetime."""
-    return datetime.datetime.strptime(timestr, fmt)
-
-
-def isotime(at=None):
-    """Stringify time in ISO 8601 format"""
-    if not at:
-        at = datetime.datetime.utcnow()
-    str = at.strftime(ISO_TIME_FORMAT)
-    tz = at.tzinfo.tzname(None) if at.tzinfo else 'UTC'
-    str += ('Z' if tz == 'UTC' else tz)
-    return str
-
-
-def parse_isotime(timestr):
-    """Turn an iso formatted time back into a datetime."""
-    try:
-        return iso8601.parse_date(timestr)
-    except (iso8601.ParseError, TypeError) as e:
-        raise ValueError(e.message)
-
-
-def normalize_time(timestamp):
-    """Normalize time in arbitrary timezone to UTC"""
-    offset = timestamp.utcoffset()
-    return timestamp.replace(tzinfo=None) - offset if offset else timestamp
-
-
 def parse_mailmap(mailmap='.mailmap'):
     mapping = {}
     if os.path.exists(mailmap):
@@ -568,14 +518,18 @@ def str_dict_replace(s, mapping):
 class LazyPluggable(object):
     """A pluggable backend loaded lazily based on some value."""
 
-    def __init__(self, pivot, **backends):
+    def __init__(self, pivot, config_group=None, **backends):
         self.__backends = backends
         self.__pivot = pivot
         self.__backend = None
+        self.__config_group = config_group
 
     def __get_backend(self):
         if not self.__backend:
-            backend_name = FLAGS[self.__pivot]
+            if self.__config_group is None:
+                backend_name = CONF[self.__pivot]
+            else:
+                backend_name = CONF[self.__config_group][self.__pivot]
             if backend_name not in self.__backends:
                 msg = _('Invalid backend: %s') % backend_name
                 raise exception.NovaException(msg)
@@ -589,7 +543,6 @@ class LazyPluggable(object):
                 fromlist = backend
 
             self.__backend = __import__(name, None, None, fromlist)
-            LOG.debug(_('backend %s'), self.__backend)
         return self.__backend
 
     def __getattr__(self, key):
@@ -614,12 +567,23 @@ class LoopingCallDone(Exception):
         self.retvalue = retvalue
 
 
-class LoopingCall(object):
+class LoopingCallBase(object):
     def __init__(self, f=None, *args, **kw):
         self.args = args
         self.kw = kw
         self.f = f
         self._running = False
+        self.done = None
+
+    def stop(self):
+        self._running = False
+
+    def wait(self):
+        return self.done.wait()
+
+
+class FixedIntervalLoopingCall(LoopingCallBase):
+    """A looping call which happens at a fixed interval."""
 
     def start(self, interval, initial_delay=None):
         self._running = True
@@ -639,7 +603,7 @@ class LoopingCall(object):
                 self.stop()
                 done.send(e.retvalue)
             except Exception:
-                LOG.exception(_('in looping call'))
+                LOG.exception(_('in fixed duration looping call'))
                 done.send_exception(*sys.exc_info())
                 return
             else:
@@ -650,11 +614,87 @@ class LoopingCall(object):
         greenthread.spawn(_inner)
         return self.done
 
-    def stop(self):
-        self._running = False
 
-    def wait(self):
-        return self.done.wait()
+class DynamicLoopingCall(LoopingCallBase):
+    """A looping call which happens sleeps until the next known event.
+
+    The function called should return how long to sleep for before being
+    called again.
+    """
+
+    def start(self, initial_delay=None, periodic_interval_max=None):
+        self._running = True
+        done = event.Event()
+
+        def _inner():
+            if initial_delay:
+                greenthread.sleep(initial_delay)
+
+            try:
+                while self._running:
+                    idle = self.f(*self.args, **self.kw)
+                    if not self._running:
+                        break
+
+                    if periodic_interval_max is not None:
+                        idle = min(idle, periodic_interval_max)
+                    LOG.debug(_('Periodic task processor sleeping for %.02f '
+                                'seconds'), idle)
+                    greenthread.sleep(idle)
+            except LoopingCallDone, e:
+                self.stop()
+                done.send(e.retvalue)
+            except Exception:
+                LOG.exception(_('in dynamic looping call'))
+                done.send_exception(*sys.exc_info())
+                return
+            else:
+                done.send(True)
+
+        self.done = done
+
+        greenthread.spawn(_inner)
+        return self.done
+
+
+class ProtectedExpatParser(expatreader.ExpatParser):
+    """An expat parser which disables DTD's and entities by default."""
+
+    def __init__(self, forbid_dtd=True, forbid_entities=True,
+                 *args, **kwargs):
+        # Python 2.x old style class
+        expatreader.ExpatParser.__init__(self, *args, **kwargs)
+        self.forbid_dtd = forbid_dtd
+        self.forbid_entities = forbid_entities
+
+    def start_doctype_decl(self, name, sysid, pubid, has_internal_subset):
+        raise ValueError("Inline DTD forbidden")
+
+    def entity_decl(self, entityName, is_parameter_entity, value, base,
+                    systemId, publicId, notationName):
+        raise ValueError("<!ENTITY> forbidden")
+
+    def unparsed_entity_decl(self, name, base, sysid, pubid, notation_name):
+        # expat 1.2
+        raise ValueError("<!ENTITY> forbidden")
+
+    def reset(self):
+        expatreader.ExpatParser.reset(self)
+        if self.forbid_dtd:
+            self._parser.StartDoctypeDeclHandler = self.start_doctype_decl
+        if self.forbid_entities:
+            self._parser.EntityDeclHandler = self.entity_decl
+            self._parser.UnparsedEntityDeclHandler = self.unparsed_entity_decl
+
+
+def safe_minidom_parse_string(xml_string):
+    """Parse an XML string using minidom safely.
+
+    """
+    try:
+        return minidom.parseString(xml_string, parser=ProtectedExpatParser())
+    except sax.SAXParseException as se:
+        raise expat.ExpatError()
 
 
 def xhtml_escape(value):
@@ -677,292 +717,36 @@ def utf8(value):
     return value
 
 
-def to_primitive(value, convert_instances=False, level=0):
-    """Convert a complex object into primitives.
+def to_bytes(text, default=0):
+    """Try to turn a string into a number of bytes. Looks at the last
+    characters of the text to determine what conversion is needed to
+    turn the input text into a byte number.
 
-    Handy for JSON serialization. We can optionally handle instances,
-    but since this is a recursive function, we could have cyclical
-    data structures.
-
-    To handle cyclical data structures we could track the actual objects
-    visited in a set, but not all objects are hashable. Instead we just
-    track the depth of the object inspections and don't go too deep.
-
-    Therefore, convert_instances=True is lossy ... be aware.
+    Supports: B/b, K/k, M/m, G/g, T/t (or the same with b/B on the end)
 
     """
-    nasty = [inspect.ismodule, inspect.isclass, inspect.ismethod,
-             inspect.isfunction, inspect.isgeneratorfunction,
-             inspect.isgenerator, inspect.istraceback, inspect.isframe,
-             inspect.iscode, inspect.isbuiltin, inspect.isroutine,
-             inspect.isabstract]
-    for test in nasty:
-        if test(value):
-            return unicode(value)
-
-    # value of itertools.count doesn't get caught by inspects
-    # above and results in infinite loop when list(value) is called.
-    if type(value) == itertools.count:
-        return unicode(value)
-
-    # FIXME(vish): Workaround for LP bug 852095. Without this workaround,
-    #              tests that raise an exception in a mocked method that
-    #              has a @wrap_exception with a notifier will fail. If
-    #              we up the dependency to 0.5.4 (when it is released) we
-    #              can remove this workaround.
-    if getattr(value, '__module__', None) == 'mox':
-        return 'mock'
-
-    if level > 3:
-        return '?'
-
-    # The try block may not be necessary after the class check above,
-    # but just in case ...
+    # Take off everything not number 'like' (which should leave
+    # only the byte 'identifier' left)
+    mult_key_org = text.lstrip('-1234567890')
+    mult_key = mult_key_org.lower()
+    mult_key_len = len(mult_key)
+    if mult_key.endswith("b"):
+        mult_key = mult_key[0:-1]
     try:
-        if isinstance(value, (list, tuple)):
-            o = []
-            for v in value:
-                o.append(to_primitive(v, convert_instances=convert_instances,
-                                      level=level))
-            return o
-        elif isinstance(value, dict):
-            o = {}
-            for k, v in value.iteritems():
-                o[k] = to_primitive(v, convert_instances=convert_instances,
-                                    level=level)
-            return o
-        elif isinstance(value, datetime.datetime):
-            return str(value)
-        elif hasattr(value, 'iteritems'):
-            return to_primitive(dict(value.iteritems()),
-                                convert_instances=convert_instances,
-                                level=level)
-        elif hasattr(value, '__iter__'):
-            return to_primitive(list(value), level)
-        elif convert_instances and hasattr(value, '__dict__'):
-            # Likely an instance of something. Watch for cycles.
-            # Ignore class member vars.
-            return to_primitive(value.__dict__,
-                                convert_instances=convert_instances,
-                                level=level + 1)
-        else:
-            return value
-    except TypeError, e:
-        # Class objects are tricky since they may define something like
-        # __iter__ defined but it isn't callable as list().
-        return unicode(value)
-
-
-def dumps(value):
-    try:
-        return json.dumps(value)
-    except TypeError:
-        pass
-    return json.dumps(to_primitive(value))
-
-
-def loads(s):
-    return json.loads(s)
-
-
-try:
-    import anyjson
-except ImportError:
-    pass
-else:
-    anyjson._modules.append(("nova.utils", "dumps", TypeError,
-                                           "loads", ValueError))
-    anyjson.force_implementation("nova.utils")
-
-
-class GreenLockFile(lockfile.FileLock):
-    """Implementation of lockfile that allows for a lock per greenthread.
-
-    Simply implements lockfile:LockBase init with an addiontall suffix
-    on the unique name of the greenthread identifier
-    """
-    def __init__(self, path, threaded=True):
-        self.path = path
-        self.lock_file = os.path.abspath(path) + ".lock"
-        self.hostname = socket.gethostname()
-        self.pid = os.getpid()
-        if threaded:
-            t = threading.current_thread()
-            # Thread objects in Python 2.4 and earlier do not have ident
-            # attrs.  Worm around that.
-            ident = getattr(t, "ident", hash(t)) or hash(t)
-            gident = corolocal.get_ident()
-            self.tname = "-%x-%x" % (ident & 0xffffffff, gident & 0xffffffff)
-        else:
-            self.tname = ""
-        dirname = os.path.dirname(self.lock_file)
-        self.unique_name = os.path.join(dirname,
-                                        "%s%s.%s" % (self.hostname,
-                                                     self.tname,
-                                                     self.pid))
-
-
-_semaphores = {}
-
-
-def synchronized(name, external=False):
-    """Synchronization decorator.
-
-    Decorating a method like so::
-
-        @synchronized('mylock')
-        def foo(self, *args):
-           ...
-
-    ensures that only one thread will execute the bar method at a time.
-
-    Different methods can share the same lock::
-
-        @synchronized('mylock')
-        def foo(self, *args):
-           ...
-
-        @synchronized('mylock')
-        def bar(self, *args):
-           ...
-
-    This way only one of either foo or bar can be executing at a time.
-
-    The external keyword argument denotes whether this lock should work across
-    multiple processes. This means that if two different workers both run a
-    a method decorated with @synchronized('mylock', external=True), only one
-    of them will execute at a time.
-
-    Important limitation: you can only have one external lock running per
-    thread at a time. For example the following will fail:
-
-        @utils.synchronized('testlock1', external=True)
-        def outer_lock():
-
-            @utils.synchronized('testlock2', external=True)
-            def inner_lock():
-                pass
-            inner_lock()
-
-        outer_lock()
-
-    """
-
-    def wrap(f):
-        @functools.wraps(f)
-        def inner(*args, **kwargs):
-            # NOTE(soren): If we ever go natively threaded, this will be racy.
-            #              See http://stackoverflow.com/questions/5390569/dyn
-            #              amically-allocating-and-destroying-mutexes
-            if name not in _semaphores:
-                _semaphores[name] = semaphore.Semaphore()
-            sem = _semaphores[name]
-            LOG.debug(_('Attempting to grab semaphore "%(lock)s" for method '
-                        '"%(method)s"...'), {'lock': name,
-                                             'method': f.__name__})
-            with sem:
-                LOG.debug(_('Got semaphore "%(lock)s" for method '
-                            '"%(method)s"...'), {'lock': name,
-                                                 'method': f.__name__})
-                if external and not FLAGS.disable_process_locking:
-                    LOG.debug(_('Attempting to grab file lock "%(lock)s" for '
-                                'method "%(method)s"...'),
-                              {'lock': name, 'method': f.__name__})
-                    lock_file_path = os.path.join(FLAGS.lock_path,
-                                                  'nova-%s' % name)
-                    lock = GreenLockFile(lock_file_path)
-                    with lock:
-                        LOG.debug(_('Got file lock "%(lock)s" for '
-                                    'method "%(method)s"...'),
-                                  {'lock': name, 'method': f.__name__})
-                        retval = f(*args, **kwargs)
-                else:
-                    retval = f(*args, **kwargs)
-
-            # If no-one else is waiting for it, delete it.
-            # See note about possible raciness above.
-            if not sem.balance < 1:
-                del _semaphores[name]
-
-            return retval
-        return inner
-    return wrap
-
-
-def cleanup_file_locks():
-    """clean up stale locks left behind by process failures
-
-    The lockfile module, used by @synchronized, can leave stale lockfiles
-    behind after process failure. These locks can cause process hangs
-    at startup, when a process deadlocks on a lock which will never
-    be unlocked.
-
-    Intended to be called at service startup.
-
-    """
-
-    # NOTE(mikeyp) this routine incorporates some internal knowledge
-    #              from the lockfile module, and this logic really
-    #              should be part of that module.
-    #
-    # cleanup logic:
-    # 1) look for the lockfile modules's 'sentinel' files, of the form
-    #    hostname.[thread-.*]-pid, extract the pid.
-    #    if pid doesn't match a running process, delete the file since
-    #    it's from a dead process.
-    # 2) check for the actual lockfiles. if lockfile exists with linkcount
-    #    of 1, it's bogus, so delete it. A link count >= 2 indicates that
-    #    there are probably sentinels still linked to it from active
-    #    processes.  This check isn't perfect, but there is no way to
-    #    reliably tell which sentinels refer to which lock in the
-    #    lockfile implementation.
-
-    if FLAGS.disable_process_locking:
-        return
-
-    hostname = socket.gethostname()
-    sentinel_re = hostname + r'\..*-(\d+$)'
-    lockfile_re = r'nova-.*\.lock'
-    files = os.listdir(FLAGS.lock_path)
-
-    # cleanup sentinels
-    for filename in files:
-        match = re.match(sentinel_re, filename)
-        if match is None:
-            continue
-        pid = match.group(1)
-        LOG.debug(_('Found sentinel %(filename)s for pid %(pid)s'),
-                  {'filename': filename, 'pid': pid})
-        try:
-            os.kill(int(pid), 0)
-        except OSError, e:
-            # PID wasn't found
-            delete_if_exists(os.path.join(FLAGS.lock_path, filename))
-            LOG.debug(_('Cleaned sentinel %(filename)s for pid %(pid)s'),
-                      {'filename': filename, 'pid': pid})
-
-    # cleanup lock files
-    for filename in files:
-        match = re.match(lockfile_re, filename)
-        if match is None:
-            continue
-        try:
-            stat_info = os.stat(os.path.join(FLAGS.lock_path, filename))
-        except OSError as e:
-            if e.errno == errno.ENOENT:
-                continue
-            else:
-                raise
-        LOG.debug(_('Found lockfile %(file)s with link count %(count)d'),
-                  {'file': filename, 'count': stat_info.st_nlink})
-        if stat_info.st_nlink == 1:
-            delete_if_exists(os.path.join(FLAGS.lock_path, filename))
-            LOG.debug(_('Cleaned lockfile %(file)s with link count %(count)d'),
-                      {'file': filename, 'count': stat_info.st_nlink})
+        multiplier = BYTE_MULTIPLIERS[mult_key]
+        if mult_key_len:
+            # Empty cases shouldn't cause text[0:-0]
+            text = text[0:-mult_key_len]
+        return int(text) * multiplier
+    except KeyError:
+        msg = _('Unknown byte multiplier: %s') % mult_key_org
+        raise TypeError(msg)
+    except ValueError:
+        return default
 
 
 def delete_if_exists(pathname):
-    """delete a file, but ignore file not found error"""
+    """delete a file, but ignore file not found error."""
 
     try:
         os.unlink(pathname)
@@ -1062,6 +846,24 @@ def subset_dict(dict_, keys):
     return subset
 
 
+def diff_dict(orig, new):
+    """
+    Return a dict describing how to change orig to new.  The keys
+    correspond to values that have changed; the value will be a list
+    of one or two elements.  The first element of the list will be
+    either '+' or '-', indicating whether the key was updated or
+    deleted; if the key was updated, the list will contain a second
+    element, giving the updated value.
+    """
+    # Figure out what keys went away
+    result = dict((k, ['-']) for k in set(orig.keys()) - set(new.keys()))
+    # Compute the updates
+    for key, value in new.items():
+        if key not in orig or value != orig[key]:
+            result[key] = ['+', value]
+    return result
+
+
 def check_isinstance(obj, cls):
     """Checks that obj is of type cls, and lets PyLint infer types."""
     if isinstance(obj, cls):
@@ -1099,47 +901,62 @@ def parse_server_string(server_str):
         return ('', '')
 
 
-def gen_uuid():
-    return uuid.uuid4()
-
-
-def is_uuid_like(val):
-    """For our purposes, a UUID is a string in canonical form:
-
-        aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-    """
-    try:
-        uuid.UUID(val)
-        return True
-    except (TypeError, ValueError, AttributeError):
-        return False
-
-
 def bool_from_str(val):
-    """Convert a string representation of a bool into a bool value"""
+    """Convert a string representation of a bool into a bool value."""
 
     if not val:
         return False
     try:
         return True if int(val) else False
     except ValueError:
-        return val.lower() == 'true'
+        return val.lower() == 'true' or \
+               val.lower() == 'yes' or \
+               val.lower() == 'y'
+
+
+def is_int_like(val):
+    """Check if a value looks like an int."""
+    try:
+        return str(int(val)) == str(val)
+    except Exception:
+        return False
+
+
+def is_valid_boolstr(val):
+    """Check if the provided string is a valid bool string or not."""
+    boolstrs = ('true', 'false', 'yes', 'no', 'y', 'n', '1', '0')
+    return str(val).lower() in boolstrs
 
 
 def is_valid_ipv4(address):
-    """valid the address strictly as per format xxx.xxx.xxx.xxx.
-    where xxx is a value between 0 and 255.
-    """
-    parts = address.split(".")
-    if len(parts) != 4:
+    """Verify that address represents a valid IPv4 address."""
+    try:
+        addr = netaddr.IPAddress(address)
+        return addr.version == 4
+    except Exception:
         return False
-    for item in parts:
-        try:
-            if not 0 <= int(item) <= 255:
-                return False
-        except ValueError:
-            return False
-    return True
+
+
+def is_valid_ipv6(address):
+    return netaddr.valid_ipv6(address)
+
+
+def is_valid_ipv6_cidr(address):
+    try:
+        str(netaddr.IPNetwork(address, version=6).cidr)
+        return True
+    except Exception:
+        return False
+
+
+def get_shortened_ipv6(address):
+    addr = netaddr.IPAddress(address, version=6)
+    return str(addr.ipv6())
+
+
+def get_shortened_ipv6_cidr(address):
+    net = netaddr.IPNetwork(address, version=6)
+    return str(net.cidr)
 
 
 def is_valid_cidr(address):
@@ -1166,26 +983,36 @@ def is_valid_cidr(address):
     return True
 
 
+def get_ip_version(network):
+    """Returns the IP version of a network (IPv4 or IPv6). Raises
+    AddrFormatError if invalid network."""
+    if netaddr.IPNetwork(network).version == 6:
+        return "IPv6"
+    elif netaddr.IPNetwork(network).version == 4:
+        return "IPv4"
+
+
 def monkey_patch():
-    """  If the Flags.monkey_patch set as True,
+    """If the Flags.monkey_patch set as True,
     this function patches a decorator
     for all functions in specified modules.
     You can set decorators for each modules
-    using FLAGS.monkey_patch_modules.
+    using CONF.monkey_patch_modules.
     The format is "Module path:Decorator function".
-    Example: 'nova.api.ec2.cloud:nova.notifier.api.notify_decorator'
+    Example:
+      'nova.api.ec2.cloud:nova.openstack.common.notifier.api.notify_decorator'
 
     Parameters of the decorator is as follows.
-    (See nova.notifier.api.notify_decorator)
+    (See nova.openstack.common.notifier.api.notify_decorator)
 
     name - name of the function
     function - object of the function
     """
-    # If FLAGS.monkey_patch is not True, this function do nothing.
-    if not FLAGS.monkey_patch:
+    # If CONF.monkey_patch is not True, this function do nothing.
+    if not CONF.monkey_patch:
         return
     # Get list of modules and decorators
-    for module_and_decorator in FLAGS.monkey_patch_modules:
+    for module_and_decorator in CONF.monkey_patch_modules:
         module, decorator_name = module_and_decorator.split(':')
         # import decorator function
         decorator = importutils.import_class(decorator_name)
@@ -1207,7 +1034,7 @@ def monkey_patch():
 
 
 def convert_to_list_dict(lst, label):
-    """Convert a value or list into a list of dicts"""
+    """Convert a value or list into a list of dicts."""
     if not lst:
         return None
     if not isinstance(lst, list):
@@ -1216,7 +1043,7 @@ def convert_to_list_dict(lst, label):
 
 
 def timefunc(func):
-    """Decorator that logs how long a particular function took to execute"""
+    """Decorator that logs how long a particular function took to execute."""
     @functools.wraps(func)
     def inner(*args, **kwargs):
         start_time = time.time()
@@ -1227,31 +1054,6 @@ def timefunc(func):
             LOG.debug(_("timefunc: '%(name)s' took %(total_time).2f secs") %
                       dict(name=func.__name__, total_time=total_time))
     return inner
-
-
-def generate_glance_url():
-    """Generate the URL to glance."""
-    # TODO(jk0): This will eventually need to take SSL into consideration
-    # when supported in glance.
-    return "http://%s:%d" % (FLAGS.glance_host, FLAGS.glance_port)
-
-
-def generate_image_url(image_ref):
-    """Generate a image URL from an image_ref."""
-    return "%s/images/%s" % (generate_glance_url(), image_ref)
-
-
-@contextlib.contextmanager
-def logging_error(message):
-    """Catches exception, write message to the log, re-raise.
-    This is a common refinement of save_and_reraise that writes a specific
-    message to the log.
-    """
-    try:
-        yield
-    except Exception as error:
-        with excutils.save_and_reraise_exception():
-            LOG.exception(message)
 
 
 @contextlib.contextmanager
@@ -1282,7 +1084,7 @@ def make_dev_path(dev, partition=None, base='/dev'):
 
 
 def total_seconds(td):
-    """Local total_seconds implementation for compatibility with python 2.6"""
+    """Local total_seconds implementation for compatibility with python 2.6."""
     if hasattr(td, 'total_seconds'):
         return td.total_seconds()
     else:
@@ -1324,10 +1126,23 @@ def read_cached_file(filename, cache_info, reload_func=None):
     return cache_info['data']
 
 
+def file_open(*args, **kwargs):
+    """Open file
+
+    see built-in file() documentation for more details
+
+    Note: The reason this is kept in a separate module is to easily
+          be able to provide a stub module that doesn't alter system
+          state at all (for unit tests)
+    """
+    return file(*args, **kwargs)
+
+
 def hash_file(file_like_object):
     """Generate a hash for the contents of a file."""
     checksum = hashlib.sha1()
-    any(map(checksum.update, iter(lambda: file_like_object.read(32768), '')))
+    for chunk in iter(lambda: file_like_object.read(32768), b''):
+        checksum.update(chunk)
     return checksum.hexdigest()
 
 
@@ -1342,196 +1157,42 @@ def temporary_mutation(obj, **kwargs):
         with temporary_mutation(context, read_deleted="yes"):
             do_something_that_needed_deleted_objects()
     """
+    def is_dict_like(thing):
+        return hasattr(thing, 'has_key')
+
+    def get(thing, attr, default):
+        if is_dict_like(thing):
+            return thing.get(attr, default)
+        else:
+            return getattr(thing, attr, default)
+
+    def set_value(thing, attr, val):
+        if is_dict_like(thing):
+            thing[attr] = val
+        else:
+            setattr(thing, attr, val)
+
+    def delete(thing, attr):
+        if is_dict_like(thing):
+            del thing[attr]
+        else:
+            delattr(thing, attr)
+
     NOT_PRESENT = object()
 
     old_values = {}
     for attr, new_value in kwargs.items():
-        old_values[attr] = getattr(obj, attr, NOT_PRESENT)
-        setattr(obj, attr, new_value)
+        old_values[attr] = get(obj, attr, NOT_PRESENT)
+        set_value(obj, attr, new_value)
 
     try:
         yield
     finally:
         for attr, old_value in old_values.items():
             if old_value is NOT_PRESENT:
-                del obj[attr]
+                delete(obj, attr)
             else:
-                setattr(obj, attr, old_value)
-
-
-def warn_deprecated_class(cls, msg):
-    """
-    Issues a warning to indicate that the given class is deprecated.
-    If a message is given, it is appended to the deprecation warning.
-    """
-
-    fullname = '%s.%s' % (cls.__module__, cls.__name__)
-    if msg:
-        fullmsg = _("Class %(fullname)s is deprecated: %(msg)s")
-    else:
-        fullmsg = _("Class %(fullname)s is deprecated")
-
-    # Issue the warning
-    warnings.warn(fullmsg % locals(), DeprecationWarning, stacklevel=3)
-
-
-def warn_deprecated_function(func, msg):
-    """
-    Issues a warning to indicate that the given function is
-    deprecated.  If a message is given, it is appended to the
-    deprecation warning.
-    """
-
-    name = func.__name__
-
-    # Find the function's definition
-    sourcefile = inspect.getsourcefile(func)
-
-    # Find the line number, if possible
-    if inspect.ismethod(func):
-        code = func.im_func.func_code
-    else:
-        code = func.func_code
-    lineno = getattr(code, 'co_firstlineno', None)
-
-    if lineno is None:
-        location = sourcefile
-    else:
-        location = "%s:%d" % (sourcefile, lineno)
-
-    # Build up the message
-    if msg:
-        fullmsg = _("Function %(name)s in %(location)s is deprecated: %(msg)s")
-    else:
-        fullmsg = _("Function %(name)s in %(location)s is deprecated")
-
-    # Issue the warning
-    warnings.warn(fullmsg % locals(), DeprecationWarning, stacklevel=3)
-
-
-def _stubout(klass, message):
-    """
-    Scans a class and generates wrapping stubs for __new__() and every
-    class and static method.  Returns a dictionary which can be passed
-    to type() to generate a wrapping class.
-    """
-
-    overrides = {}
-
-    def makestub_class(name, func):
-        """
-        Create a stub for wrapping class methods.
-        """
-
-        def stub(cls, *args, **kwargs):
-            warn_deprecated_class(klass, message)
-            return func(*args, **kwargs)
-
-        # Overwrite the stub's name
-        stub.__name__ = name
-        stub.func_name = name
-
-        return classmethod(stub)
-
-    def makestub_static(name, func):
-        """
-        Create a stub for wrapping static methods.
-        """
-
-        def stub(*args, **kwargs):
-            warn_deprecated_class(klass, message)
-            return func(*args, **kwargs)
-
-        # Overwrite the stub's name
-        stub.__name__ = name
-        stub.func_name = name
-
-        return staticmethod(stub)
-
-    for name, kind, _klass, _obj in inspect.classify_class_attrs(klass):
-        # We're only interested in __new__(), class methods, and
-        # static methods...
-        if (name != '__new__' and
-            kind not in ('class method', 'static method')):
-            continue
-
-        # Get the function...
-        func = getattr(klass, name)
-
-        # Override it in the class
-        if kind == 'class method':
-            stub = makestub_class(name, func)
-        elif kind == 'static method' or name == '__new__':
-            stub = makestub_static(name, func)
-
-        # Save it in the overrides dictionary...
-        overrides[name] = stub
-
-    # Apply the overrides
-    for name, stub in overrides.items():
-        setattr(klass, name, stub)
-
-
-def deprecated(message=''):
-    """
-    Marks a function, class, or method as being deprecated.  For
-    functions and methods, emits a warning each time the function or
-    method is called.  For classes, generates a new subclass which
-    will emit a warning each time the class is instantiated, or each
-    time any class or static method is called.
-
-    If a message is passed to the decorator, that message will be
-    appended to the emitted warning.  This may be used to suggest an
-    alternate way of achieving the desired effect, or to explain why
-    the function, class, or method is deprecated.
-    """
-
-    def decorator(f_or_c):
-        # Make sure we can deprecate it...
-        if not callable(f_or_c) or isinstance(f_or_c, types.ClassType):
-            warnings.warn("Cannot mark object %r as deprecated" % f_or_c,
-                          DeprecationWarning, stacklevel=2)
-            return f_or_c
-
-        # If we're deprecating a class, create a subclass of it and
-        # stub out all the class and static methods
-        if inspect.isclass(f_or_c):
-            klass = f_or_c
-            _stubout(klass, message)
-            return klass
-
-        # OK, it's a function; use a traditional wrapper...
-        func = f_or_c
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            warn_deprecated_function(func, message)
-
-            return func(*args, **kwargs)
-
-        return wrapper
-    return decorator
-
-
-def _showwarning(message, category, filename, lineno, file=None, line=None):
-    """
-    Redirect warnings into logging.
-    """
-
-    fmtmsg = warnings.formatwarning(message, category, filename, lineno, line)
-    LOG.warning(fmtmsg)
-
-
-# Install our warnings handler
-warnings.showwarning = _showwarning
-
-
-def service_is_up(service):
-    """Check whether a service is up based on last heartbeat."""
-    last_heartbeat = service['updated_at'] or service['created_at']
-    # Timestamps in DB are UTC.
-    elapsed = total_seconds(utcnow() - last_heartbeat)
-    return abs(elapsed) <= FLAGS.service_down_time
+                set_value(obj, attr, old_value)
 
 
 def generate_mac_address():
@@ -1543,7 +1204,7 @@ def generate_mac_address():
     #             properly: 0xfa.
     #             Discussion: https://bugs.launchpad.net/nova/+bug/921838
     mac = [0xfa, 0x16, 0x3e,
-           random.randint(0x00, 0x7f),
+           random.randint(0x00, 0xff),
            random.randint(0x00, 0xff),
            random.randint(0x00, 0xff)]
     return ':'.join(map(lambda x: "%02x" % x, mac))
@@ -1580,6 +1241,7 @@ def temporary_chown(path, owner_uid=None):
 
 @contextlib.contextmanager
 def tempdir(**kwargs):
+    tempfile.tempdir = CONF.tempdir
     tmpdir = tempfile.mkdtemp(**kwargs)
     try:
         yield tmpdir
@@ -1590,24 +1252,17 @@ def tempdir(**kwargs):
             LOG.error(_('Could not remove tmpdir: %s'), str(e))
 
 
-def strcmp_const_time(s1, s2):
-    """Constant-time string comparison.
-
-    :params s1: the first string
-    :params s2: the second string
-
-    :return: True if the strings are equal.
-
-    This function takes two strings and compares them.  It is intended to be
-    used when doing a comparison for authentication purposes to help guard
-    against timing attacks.
-    """
-    if len(s1) != len(s2):
-        return False
-    result = 0
-    for (a, b) in zip(s1, s2):
-        result |= ord(a) ^ ord(b)
-    return result == 0
+def walk_class_hierarchy(clazz, encountered=None):
+    """Walk class hierarchy, yielding most derived classes first."""
+    if not encountered:
+        encountered = []
+    for subclass in clazz.__subclasses__():
+        if subclass not in encountered:
+            encountered.append(subclass)
+            # drill down to leaves first
+            for subsubclass in walk_class_hierarchy(subclass, encountered):
+                yield subsubclass
+            yield subclass
 
 
 class UndoManager(object):
@@ -1635,3 +1290,152 @@ class UndoManager(object):
                 LOG.exception(msg, **kwargs)
 
             self._rollback()
+
+
+def mkfs(fs, path, label=None):
+    """Format a file or block device
+
+    :param fs: Filesystem type (examples include 'swap', 'ext3', 'ext4'
+               'btrfs', etc.)
+    :param path: Path to file or block device to format
+    :param label: Volume label to use
+    """
+    if fs == 'swap':
+        args = ['mkswap']
+    else:
+        args = ['mkfs', '-t', fs]
+    #add -F to force no interactive execute on non-block device.
+    if fs in ('ext3', 'ext4'):
+        args.extend(['-F'])
+    if label:
+        if fs in ('msdos', 'vfat'):
+            label_opt = '-n'
+        else:
+            label_opt = '-L'
+        args.extend([label_opt, label])
+    args.append(path)
+    execute(*args)
+
+
+def last_bytes(file_like_object, num):
+    """Return num bytes from the end of the file, and remaining byte count.
+
+    :param file_like_object: The file to read
+    :param num: The number of bytes to return
+
+    :returns (data, remaining)
+    """
+
+    try:
+        file_like_object.seek(-num, os.SEEK_END)
+    except IOError, e:
+        if e.errno == 22:
+            file_like_object.seek(0, os.SEEK_SET)
+        else:
+            raise
+
+    remaining = file_like_object.tell()
+    return (file_like_object.read(), remaining)
+
+
+def metadata_to_dict(metadata):
+    result = {}
+    for item in metadata:
+        if not item.get('deleted'):
+            result[item['key']] = item['value']
+    return result
+
+
+def get_wrapped_function(function):
+    """Get the method at the bottom of a stack of decorators."""
+    if not hasattr(function, 'func_closure') or not function.func_closure:
+        return function
+
+    def _get_wrapped_function(function):
+        if not hasattr(function, 'func_closure') or not function.func_closure:
+            return None
+
+        for closure in function.func_closure:
+            func = closure.cell_contents
+
+            deeper_func = _get_wrapped_function(func)
+            if deeper_func:
+                return deeper_func
+            elif hasattr(closure.cell_contents, '__call__'):
+                return closure.cell_contents
+
+    return _get_wrapped_function(function)
+
+
+def getcallargs(function, *args, **kwargs):
+    """This is a simplified inspect.getcallargs (2.7+).
+
+    It should be replaced when python >= 2.7 is standard.
+    """
+    keyed_args = {}
+    argnames, varargs, keywords, defaults = inspect.getargspec(function)
+
+    keyed_args.update(kwargs)
+
+    #NOTE(alaski) the implicit 'self' or 'cls' argument shows up in
+    # argnames but not in args or kwargs.  Uses 'in' rather than '==' because
+    # some tests use 'self2'.
+    if 'self' in argnames[0] or 'cls' == argnames[0]:
+        # The function may not actually be a method or have im_self.
+        # Typically seen when it's stubbed with mox.
+        if inspect.ismethod(function) and hasattr(function, 'im_self'):
+            keyed_args[argnames[0]] = function.im_self
+        else:
+            keyed_args[argnames[0]] = None
+
+    remaining_argnames = filter(lambda x: x not in keyed_args, argnames)
+    keyed_args.update(dict(zip(remaining_argnames, args)))
+
+    if defaults:
+        num_defaults = len(defaults)
+        for argname, value in zip(argnames[-num_defaults:], defaults):
+            if argname not in keyed_args:
+                keyed_args[argname] = value
+
+    return keyed_args
+
+
+class ExceptionHelper(object):
+    """Class to wrap another and translate the ClientExceptions raised by its
+    function calls to the actual ones"""
+
+    def __init__(self, target):
+        self._target = target
+
+    def __getattr__(self, name):
+        func = getattr(self._target, name)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except rpc_common.ClientException, e:
+                raise (e._exc_info[1], None, e._exc_info[2])
+        return wrapper
+
+
+def check_string_length(value, name, min_length=0, max_length=None):
+    """Check the length of specified string
+    :param value: the value of the string
+    :param name: the name of the string
+    :param min_length: the min_length of the string
+    :param max_length: the max_length of the string
+    """
+    if not isinstance(value, basestring):
+        msg = _("%s is not a string or unicode") % name
+        raise exception.InvalidInput(message=msg)
+
+    if len(value) < min_length:
+        msg = _("%(name)s has less than %(min_length)s "
+                    "characters.") % locals()
+        raise exception.InvalidInput(message=msg)
+
+    if max_length and len(value) > max_length:
+        msg = _("%(name)s has more than %(max_length)s "
+                    "characters.") % locals()
+        raise exception.InvalidInput(message=msg)
