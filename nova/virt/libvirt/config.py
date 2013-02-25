@@ -807,6 +807,7 @@ class LibvirtConfigGuest(LibvirtConfigObject):
         self.os_boot_dev = None
         self.os_smbios = None
         self.devices = []
+	self.memory_backing = None
 
     def _format_basic_props(self, root):
         root.append(self._text_node("uuid", self.uuid))
@@ -885,6 +886,9 @@ class LibvirtConfigGuest(LibvirtConfigObject):
 
         self._format_devices(root)
 
+	if self.memory_backing is not None:
+	    root.append(self.memory_backing.format_dom())
+
         return root
 
     def add_device(self, dev):
@@ -907,3 +911,16 @@ class LibvirtConfigGuestSnapshot(LibvirtConfigObject):
         ss = super(LibvirtConfigGuestSnapshot, self).format_dom()
         ss.append(self._text_node("name", self.name))
         return ss
+
+class LibvirtConfigGuestMemoryBacking(LibvirtConfigObject):
+
+    def __init__(self, **kwargs):
+        super(LibvirtConfigGuestMemoryBacking, self).__init__(
+            root_name="memoryBacking",
+            **kwargs)
+
+    def format_dom(self):
+        ss = super(LibvirtConfigGuestMemoryBacking, self).format_dom()
+        ss.append(self._text_node("hugepages", ''))
+        return ss
+

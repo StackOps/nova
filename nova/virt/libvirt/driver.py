@@ -209,6 +209,9 @@ libvirt_opts = [
                  default=[],
                  help='Specific cachemodes to use for different disk types '
                       'e.g: ["file=directsync","block=none"]'),
+    cfg.BoolOpt('hugepages',
+                 default=False,
+                 help='Force hugepages as memory backing'),
     ]
 
 CONF = cfg.CONF
@@ -2286,7 +2289,11 @@ class LibvirtDriver(driver.ComputeDriver):
             graphics.listen = CONF.spice.server_listen
             guest.add_device(graphics)
 
-        return guest
+	if CONF.hugepages:
+	    mbacking = vconfig.LibvirtConfigGuestMemoryBacking()
+	    guest.memory_backing = mbacking
+        
+	return guest
 
     def to_xml(self, instance, network_info, disk_info,
                image_meta=None, rescue=None,
