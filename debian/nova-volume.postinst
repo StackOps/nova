@@ -1,0 +1,21 @@
+#!/bin/sh -e
+
+if [ "$1" = "configure" ]; then
+
+  chown root:root /etc/nova/rootwrap.d/volume.filters
+  chown nova:nova /var/lib/nova/volumes/
+
+  if which invoke-rc.d >/dev/null 2>&1; then
+    invoke-rc.d tgtd restart > /dev/null 2>&1 || true
+  else
+    /etc/init.d/tgtd restart > /dev/null 2>&1 || true
+  fi
+
+  if which invoke-rc.d >/dev/null 2>&1; then
+    invoke-rc.d nova-volume restart > /dev/null 2>&1 || true
+  else
+    /etc/init.d/nova-volume restart > /dev/null 2>&1 || true
+  fi
+fi
+
+#DEBHELPER#

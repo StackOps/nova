@@ -1,0 +1,3 @@
+debian/nova_tgt.conf etc/tgt/conf.d
+etc/nova/rootwrap.d/volume.filters
+usr/bin/nova-volume
