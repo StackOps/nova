@@ -1,4 +1,4 @@
-/var/log/nova/nova-cert.log {
+/var/log/nova/nova-baremetal.log {
     daily
     missingok
     compress

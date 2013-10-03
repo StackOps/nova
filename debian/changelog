@@ -1,8 +1,245 @@
-nova (2013.1~g2-0ubuntu2~cloud0) precise-grizzly; urgency=low
+nova (1:2013.1.2-0ubuntu1) raring-proposed; urgency=low
 
-  * New upstream release for the Ubuntu Cloud Archive.
+  * Dropped patches, applied upstream:
+    - debian/patches/CVE-2013-2096.patch: [a4fc0c8]
+  * Resynchronize with stable/grizzly (8c136a8e) (LP: #1188788):
+    - [8c136a8] instance_type data cannot be extracted from sys_meta after
+      instance deleted LP: 1185190
+    - [6556344] Some nova.tests.integrated.test_api_samples.Hypervisors* tests
+      fail when run as single test LP: 1177802
+    - [bc35dba] Make nova.virt.fake.FakeDriver useable in integration testing
+    - [ab51ac6] Cannot resize instance if base image is not available
+      LP: 1160773
+    - [4933c15] FC attach code doesn't discover multipath device LP: 1180497
+    - [605ea6f] Failure to snapshot backend LP: 1166160
+    - [ec335d0] bug in get_instance_security_groups() if security group has no
+      name LP: 1182738
+    - [fdb33fb] Traceback from cinderclient in nova-api log for BadRequest
+      errors LP: 1098048
+    - [de50a5a] vmwareapi: Add supported_instances to host state
+    - [129d118] ERROR: test_resize_server_revert BuildErrorException LP: 1161529
+    - [e05cf67] EC2 API throws stacktrace if adding security group rule that
+      already exists LP: 1180973
+    - [158f003] The hypervisor_hostname is not updated after live migration
+      LP: 1173376
+    - [b4d8cfe] variable referenced before assignment in vmwareapi code
+      LP: 1177689
+    - [40f3eed] Some Compute API methods unnecessarily alter the vm_state.
+      LP: 1158509
+    - [d4bed18] Cannot resize a volume backed instance booted without an image
+      LP: 1182114
+    - [bba57e9] nova interface-attach fails with quantum LP: 1171636
+    - [e0a8bdd] InstanceMetadata content can be None LP: 1163598
+    - [5094e83] nova coverage create lots empty folders even with coverage
+      extension disabled LP: 1169005
+    - [76eb8f7] ZooKeeper servicegroup driver is trying to import module by
+      wrong name LP: 1177776
+    - [b8c4346] Inconsistent connectivity between instances with floating IPs
+      LP: 1178745
+    - [726ae59] race condition between delete instance(with floating ip
+      associated) and delete floating ip LP: 1172599
+    - [498ce52] Don't swallow missing SR error LP: 1175357
+    - [be0a14a] Nic Ordering not guaranteed with nova-network API LP: 1170725
+    - [3c84539] Detach volume fails when using multipath iscsi LP: 1178893
+    - [fc5c6ec] Quantum Security Group driver doesn't accept none value for
+      from_port & to _port LP: 1176027
+    - [784b6e4] ERROR in log when rebooting too soon after a reboot LP: 1157237
+    - [3b52002] Resize revert operations fail with stack traces LP: 1180111
+    - [25f2025] Live migration fails when the instance booted from volume has no
+      image. LP: 1170596
+    - [1ffab28] internal service AZ not hidden for disabled zones LP: 1167956
+    - [c532f7a] Key error thrown when create lpar instance failed LP: 1173303
+    - [a35e0f4] soft delete values in InstanceSystemMetadata on instance delete
+      LP: 1153827
+    - [1a682a5] Restarting compute service mistakenly reboots live instance
+      LP: 1176897
+    - [a4fc0c8] [OSSA 2013-012] Unchecked qcow2 root disk sizes LP: 1177830
+    - [4226aa9] Nova evacuate failed when the VM is in shutoff status
+      LP: 1176773
+    - [687cd67] floating ip assignment can fail silently LP: 1178658
+    - [5358ee9] when using multi_host and update_dns_entries dnsmasq is missing
+      addn-hosts arg LP: 1170529
+    - [325ab8f] wrong instance bdm response in ec2 api LP: 1165973
 
- -- Chuck Short <zulcss@ubuntu.com>  Wed, 23 Jan 2013 12:11:47 -0600
+ -- Adam Gandelman <adamg@ubuntu.com>  Fri, 07 Jun 2013 13:28:36 -0400
+
+nova (1:2013.1.1-0ubuntu2) raring-proposed; urgency=low
+
+  * Rebase on latest security updates.
+  * SECURITY UPDATE: verify virtual size of QCOW2 images
+    - CVE-2013-2096.patch: update nova/virt/libvirt/imagebackend.py to
+      check QCOW2 image size during root disk creation
+    - CVE-2013-2096
+
+ -- James Page <james.page@ubuntu.com>  Fri, 17 May 2013 11:02:27 +0100
+
+nova (1:2013.1.1-0ubuntu1) raring-proposed; urgency=low
+
+  * Resynchronize with stable/grizzly (be94dd25) (LP: #1179626):
+    - [e49e38c] ArchiveTestCase.test_archive_deleted_rows_fk_constraint fails on
+      RHEL6 LP: 1158828
+    - [7bf3e8d] Insecure directory creation for signing LP: 1174608
+    - [55df546] VMware Hyper snapshot image missing some properties LP: 1174199
+    - [447e4a3] _update_usage_from_migrations doesn't grab instance for
+      migration LP: 1163622
+    - [79ad6cb] baremetal nodes are garbage collected incorrectly LP: 1174952
+    - [2e55ecc] volume attach fails without systool installed LP: 1172486
+    - [5576985] Nova API memcached key encoding error LP: 1174487
+    - [df5d13c] nova-manage out of memory error creating many floating IPs
+      LP: 1163394
+    - [512d495] import and install gettext in vm_vdi_cleaner.py
+    - [141107f] nova-manage uses nova.db.fixed_ip_get_all_by_instance_host,
+      which no longer exists LP: 1163660
+    - [a43c11e] Wrong proxy port in nova.conf for Spice LP: 1172957
+    - [a313b12] image creation causes stacktrace LP: 1169560
+    - [7771985] Kernel boot output missing from VNC/Spice consoles with AMI
+      images LP: 1164021
+    - [c185195] EC2 CreateVolumes/DescribeVolumes strange status  LP: 1074901
+    - [1168873] console auth does not work with memcache, unicode error (again)
+      LP: 1164784
+    - [c7a0d74] Passing duplicate network ids to Quantum throws wrong exception
+      LP: 1165088
+    - [a1fe8e2] _poll_rescued_instances() makes an invalid database query
+      LP: 1167619
+    - [6c01eee] ec2 api does not work for aws-java-sdk LP: 1156445
+    - [1ecc009] Caching metadata fails when using memcached LP: 1160900
+    - [9909095] Unnecessary db call in scheduler driver live-migration code
+      LP: 1167811
+    - [a3cc7bc] libvirt livemigration warning logger refernces a not defined
+      local variable LP: 1164072
+    - [2574421] set timeout for paramiko ssh connection
+    - [7e527ca] Compute manager fails to cleanup compute_nodes not reported by
+      driver LP: 1161193
+    - [52663f7] Instance joins with system_metadata are critically slow
+      LP: 1164737
+    - [e653938] nova list quantum security group cache  LP: 1161518
+    - [f7bcd95] get_instance_security_groups() get_admin_context() causes lots
+      of keystone chatter LP: 1161081
+    - [232f874] Nova API Memcached Encoding Error LP: 1158958
+    - [6d16278] Wrong disk's over committed size computing caused
+      disk_available_least resource counting increasing LP: 1167695
+    - [02da2d5] PolicyNotAuthorized not returned for confirmResize,
+      revertResize, reboot LP: 1170453
+    - [05e1c47] In-progress migrations may not have stashed instance types
+      LP: 1164110
+    - [e48e194] Update latest oslo.setup.
+    - [9db4729] Argument order inconsistancy in
+      nova.network.quantumv2.api.get_instance_nw_info() LP: 1159042
+    - [c4cd98c] remove unecessary function argument  in vmwareapi LP: 1171376
+    - [71e39dc] Cannot boot Nova as quantum throws 404 when Floating IP
+      extension unavailable LP: 1163670
+    - [0f4c3f9] sql_connection not marked secret LP: 1160680
+    - [c118890] _error_out_instance_on_exception not playing well with eventlet
+      LP: 1163552
+    - [308e721] Fix a typo in attach_interface error path
+    - [44d42e2] libvirt: use_cow_images=false and force_raw_images=false broken
+      LP: 1163009
+    - [99b77cc] migrate/resize failed in same host with powervm driver
+      LP: 1161226
+    - [994ed95] Live-migration leaves instance in MIGRATING state if scheduler
+      fails to find a host LP: 1166771
+    - [c244d66] Instances deleted during migration cause exception in
+      _destroy_evacuated_instances LP: 1155152
+    - [54fd249] nova net-list not return network uuid but id instead LP: 1162409
+    - [b2ec668] legacy_net_info guard incompatible with new-style NetworkInfo
+      LP: 1164152
+    - [8859914] Security groups may be unavailable
+    - [3861f8c] Correctly handle an empty dnsmasq --domain LP: 1161506
+    - [da1763b] Don't join metadata twice in instance_get_all()
+    - [bcd02dd] Instance joins with system_metadata are critically slow
+      LP: 1164737
+    - [e93ea66] Optimize resource tracker queries for instances
+    - [fd66545] Set defaultbranch in .gitreview to stable/grizzly
+
+ -- Adam Gandelman <adamg@ubuntu.com>  Tue, 14 May 2013 07:49:17 -0700
+
+nova (1:2013.1-0ubuntu2.1) raring-security; urgency=low
+
+  * SECURITY UPDATE: verify virtual size of QCOW2 images
+    - CVE-2013-2096.patch: update nova/virt/libvirt/imagebackend.py to
+      check QCOW2 image size during root disk creation
+    - CVE-2013-2096
+
+ -- Jamie Strandboge <jamie@ubuntu.com>  Wed, 15 May 2013 15:16:46 -0500
+
+nova (1:2013.1-0ubuntu2) raring; urgency=low
+
+  * debian/nova-cells.upstart: Fix typo in upstart job. (LP: #1163218) 
+  * debian/control: Add iptables dependency. (LP: #1172393)
+
+ -- Chuck Short <zulcss@ubuntu.com>  Wed, 24 Apr 2013 07:39:25 -0500
+
+nova (1:2013.1-0ubuntu1) raring; urgency=low
+
+  * New upstream release. 
+
+ -- Chuck Short <zulcss@ubuntu.com>  Thu, 04 Apr 2013 10:42:21 -0500
+
+nova (1:2013.1~rc2-0ubuntu1) raring; urgency=low
+
+  [ James Page ]
+  * d/control: Promote novnc and websockify to Depends for
+    nova-novncproxy (LP: #1066845). 
+
+  [ Chuck Short ]
+  *  New upstream release.
+
+ -- Chuck Short <zulcss@ubuntu.com>  Tue, 02 Apr 2013 08:44:39 -0500
+
+nova (1:2013.1~rc1-0ubuntu1) raring; urgency=low
+
+  [ Chuck Short ]
+  * New upstream release.
+  * debian/patches/avoid_setuptools_git_dependency.patch: Refreshed.
+  * debian/control: Clean up dependencies:
+    - Dropped python-gflags no longer needed.
+    - Dropped python-daemon no longer needed.
+    - Dropped python-glance no longer needed.
+    - Dropped python-lockfile no longer needed.
+    - Dropped python-simplejson no longer needed.
+    - Dropped python-tempita no longer needed.
+    - Dropped python-xattr no longer needed.
+    - Add sqlite3 required for the testsuite.
+
+  [ James Page ]
+  * d/watch: Update uversionmangle to deal with upstream versioning
+    changes, remove tarballs.openstack.org. 
+
+ -- Chuck Short <zulcss@ubuntu.com>  Wed, 20 Mar 2013 12:59:22 -0500
+
+nova (2013.1.g3-0ubuntu1) raring; urgency=low
+
+  [ Chuck Short ]
+  * New usptream release. 
+  * debian/patches/debian/patches/fix-ubuntu-tests.patch: Refreshed.
+  * debian/nova-baremetal.logrotate: Fix logfile path.
+  * debian/control, debian/nova-spiceproxy.{install, logrotate, upstart}:
+    Add spice html5 proxy support.
+  * debian/nova-novncproxy.upstart: Start on runlevel [2345]
+  * debian/rules: Call testr directly since run_tests.sh -N gives weird return
+    value when tests pass.
+  * debian/pyddist-overrides: Add websockify.
+  * debian/nova-common.postinst: Removed config file conversion, since
+    the option is no longer available. (LP: #1110567)
+  * debian/control: Add python-pyasn1 as a dependency.
+  * debian/control: Add python-oslo-config as a dependency.
+  * debian/control: Suggest sysfsutils, sg3-utils, multipath-tools for fibre
+    channel support.
+
+  [ Adam Gandelman ]
+  * debian/control: Fix typo (websocikfy -> websockify).
+
+ -- Chuck Short <zulcss@ubuntu.com>  Fri, 22 Feb 2013 09:27:29 -0600
+
+nova (2013.1~g2-0ubuntu3) raring; urgency=low
+
+  * SECURITY UPDATE: fix lack of authentication on block device used for
+    os-volume_boot
+    - debian/patches/CVE-2013-0208.patch: adjust nova/compute/api.py to
+      validate we can access the volumes
+    - CVE-2013-0208
+
+ -- Jamie Strandboge <jamie@ubuntu.com>  Thu, 24 Jan 2013 08:23:44 -0600
 
 nova (2013.1~g2-0ubuntu2) raring; urgency=low
 
@@ -65,12 +302,6 @@ nova (2013.1~g2-0ubuntu1) raring; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 11 Jan 2013 13:06:56 -0600
 
-nova (2013.1~g1-0ubuntu1~cloud0) precise-grizzly; urgency=low
-
-  * New upstream release for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Mon, 26 Nov 2012 13:47:41 -0600
-
 nova (2013.1~g1-0ubuntu1) raring; urgency=low
 
   [ Adam Gandelman ]
@@ -102,12 +333,6 @@ nova (2013.1~g1-0ubuntu1) raring; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 23 Nov 2012 09:32:05 -0600
 
-nova (2012.2-0ubuntu5~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Adam Gandelman <adamg@canonical.com>  Fri, 19 Oct 2012 17:19:17 -0700
-
 nova (2012.2-0ubuntu5) quantal; urgency=low
 
   [ Adam Gandelman ]
@@ -115,7 +340,7 @@ nova (2012.2-0ubuntu5) quantal; urgency=low
     nova-volume.  Ensure it has proper permissions. (LP: #1065320)
   * debian/patches/avoid_setuptools_git_dependency.patch:  Remove
     setuptools_git from tools/pip-requires to avoid it being automatically
-    added to python-nova's runtime dependencies. (LP: #1059907) 
+    added to python-nova's runtime dependencies. (LP: #1059907)
 
   [ Chuck Short ]
   * debian/patches/rbd-security.patch: Support override of ceph rbd
@@ -136,12 +361,6 @@ nova (2012.2-0ubuntu4) quantal; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Tue, 09 Oct 2012 11:51:15 -0500
 
-nova (2012.2-0ubuntu3~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Adam Gandelman <adamg@canonical.com>  Wed, 03 Oct 2012 12:22:41 -0700
-
 nova (2012.2-0ubuntu3) quantal; urgency=low
 
   * nova-xvpvncproxy, nova-novncproxy: Add missing .install, .logrotate,
@@ -150,12 +369,6 @@ nova (2012.2-0ubuntu3) quantal; urgency=low
     that it is actually loaded by tgt. (LP: #1060422)
 
  -- Adam Gandelman <adamg@canonical.com>  Tue, 02 Oct 2012 13:44:35 -0700
-
-nova (2012.2-0ubuntu2~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Mon, 01 Oct 2012 08:59:45 -0500
 
 nova (2012.2-0ubuntu2) quantal; urgency=low
 
@@ -166,12 +379,6 @@ nova (2012.2-0ubuntu2) quantal; urgency=low
     in Ubuntu's buildds.
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 28 Sep 2012 07:49:45 -0500
-
-nova (2012.2-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 15:41:00 -0500
 
 nova (2012.2-0ubuntu1) quantal; urgency=low
 
@@ -186,23 +393,11 @@ nova (2012.2-0ubuntu1) quantal; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 12:36:04 -0500
 
-nova (2012.2~rc3-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 14:33:14 -0500
-
 nova (2012.2~rc3-0ubuntu1) quantal; urgency=low
 
   * New upstream relase. 
 
  -- Chuck Short <zulcss@ubuntu.com>  Wed, 26 Sep 2012 12:56:25 -0500
-
-nova (2012.2~rc2-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive. 
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 13:54:23 -0500
 
 nova (2012.2~rc2-0ubuntu1) quantal; urgency=low
 
@@ -218,12 +413,6 @@ nova (2012.2~rc2-0ubuntu1) quantal; urgency=low
   * debian/rules: FTBFS if testsuite fails.
 
  -- Chuck Short <zulcss@ubuntu.com>  Tue, 25 Sep 2012 10:54:59 -0500
-
-nova (2012.2~rc1-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 20 Sep 2012 07:53:01 -0500
 
 nova (2012.2~rc1-0ubuntu1) quantal; urgency=low
 
@@ -273,7 +462,7 @@ nova (2012.2~rc1~20120827.15815-0ubuntu1) quantal; urgency=low
 
  -- Adam Gandelman <adamg@canonical.com>  Mon, 27 Aug 2012 15:37:18 -0700
 
-nova (2012.2~f3-0ubuntu1~cloud0) precise-folsom; urgency=low
+nova (2012.2~f3-0ubuntu1) quantal; urgency=low
 
   [ Chuck Short ]
   * New upstream version.
@@ -299,7 +488,7 @@ nova (2012.2~f3-0ubuntu1~cloud0) precise-folsom; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Thu, 16 Aug 2012 14:04:11 -0500
 
-nova (2012.2~f2-0ubuntu1~cloud0) precise-folsom; urgency=low
+nova (2012.2~f2-0ubuntu1) quantal; urgency=low
 
   [ Adam Gandelman ]
   * Use new rootwrap configuration structure:
@@ -317,12 +506,23 @@ nova (2012.2~f2-0ubuntu1~cloud0) precise-folsom; urgency=low
   * debian/rules: Do not remove nova.egg-info during auto_clean.  Now that
     upstream has moved to setuptools-git, doing so results in missing files
     from built package.
-  * debian/patches/kombu_tests_timeout.patch: Dropped.
-  * debian/rules: Temporarily disable test suite while blocking
-    tests are investigated. 
+
+  [ Chuck Short ]
+  * New upstream release.
+
+ -- Chuck Short <zulcss@ubuntu.com>  Fri, 06 Jul 2012 10:18:33 -0400
+
+nova (2012.2~f2~20120531.14249-0ubuntu4) quantal; urgency=low
+
   * debian/rules: Temporarily disable test suite while blocking
     tests are investigated.
   * debian/patches/kombu_tests_timeout.patch: Dropped.
+
+ -- Adam Gandelman <adamg@canonical.com>  Tue, 19 Jun 2012 17:10:26 -0700
+
+nova (2012.2~f2~20120531.14249-0ubuntu3) quantal; urgency=low
+
+  [ Adam Gandelman ]
   * debian/patches/nova-manage_flagfile_location.patch: Dropped.
   * debian/nova-common.postinst: Old format config will break nova-manage
     if left in place.  Move it away instead of copying before conversion.
@@ -338,10 +538,17 @@ nova (2012.2~f2-0ubuntu1~cloud0) precise-folsom; urgency=low
   * Give nova group read permissions nova files / directories (LP: #989241)
   * Add adm group to /var/log/nova (LP: #989242)
 
+ -- Adam Gandelman <adamg@canonical.com>  Tue, 05 Jun 2012 10:39:42 -0700
 
-  [ Chuck Short ]
-  * New upstream release.
+nova (2012.2~f2~20120531.14249-0ubuntu2) quantal; urgency=low
+
   * Really fix quantal postinst.
+
+ -- Chuck Short <zulcss@ubuntu.com>  Fri, 01 Jun 2012 11:31:33 -0400
+
+nova (2012.2~f2~20120531.14249-0ubuntu1) quantal; urgency=low
+
+  * New upstream release.
   * debian/nova-common.postinst: Fix typo when upgrading. (LP: #1005479)
   * debian/nova-common.docs: Add ChangeLog
   * debian/patches/nova-manage_flagfile_location.patch: Refreshed
@@ -349,9 +556,7 @@ nova (2012.2~f2-0ubuntu1~cloud0) precise-folsom; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 01 Jun 2012 11:07:00 -0400
 
-nova (2012.2~f1-0ubuntu1~cloud0) precise; urgency=low
-
-  [Chuck Short]
+nova (2012.2~f1-0ubuntu1) quantal; urgency=low
 
   * New upstream release.
   * Prepare for quantal:
@@ -366,20 +571,7 @@ nova (2012.2~f1-0ubuntu1~cloud0) precise; urgency=low
   * debian/patches/kombu_tests_timeout.patch: Refreshed.
   * debian/nova.conf, debian/nova-common.postinst: Convert to new ini
     file configuration
-  * debian/nova-common.docs: Add ChangeLog
-  * debian/patches/upstream: Removed
-
-  [Adam Gandleman]
-
-  * debian/patches/nova-manage_flagfile_location.patch: Dropped. 
-  * debian/nova-common.postinst: Old format config will break nova-manage
-    if left in place.  Move it away instead of copying before conversion.
-  * debian/nova.conf:  Set booleans explicitly '=true', specify path to paste
-    config.
-  * debian/*.init, debian/*.upstart.in, debian/mans/*: Update to use
-    --config-file flag instead of obsolete --flagfile.
-  * debian/nova-common.postinst: Also handle conversion of nova-compute.conf
-    to new .ini format.
+  * debian/patches/nova-manage_flagfile_location.patch: Refreshed
 
  -- Chuck Short <zulcss@ubuntu.com>  Thu, 24 May 2012 13:12:53 -0400
 

@@ -1,7 +1,8 @@
-diff -Naurp nova-2012.1.orig/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost nova-2012.1/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost
---- nova-2012.1.orig/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost	2012-03-01 12:45:52.000000000 -0500
-+++ nova-2012.1/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost	2012-03-02 11:02:03.078762386 -0500
-@@ -41,7 +41,7 @@ import pluginlib_nova as pluginlib
+Index: nova/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost
+===================================================================
+--- nova.orig/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost	2013-03-13 17:47:30.328806438 -0700
++++ nova/plugins/xenserver/xenapi/etc/xapi.d/plugins/xenhost	2013-03-13 17:47:31.088806477 -0700
+@@ -41,7 +41,7 @@
  pluginlib.configure_logging("xenhost")
  
  host_data_pattern = re.compile(r"\s*(\S+) \([^\)]+\) *: ?(.*)")
